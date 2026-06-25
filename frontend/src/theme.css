@@ -1,0 +1,30 @@
+:root {
+  --app-bg: #f3f4f6;
+  --app-bg-image: none;
+  --app-accent: #3b82f6;
+  --app-font: system-ui, sans-serif;
+  --column-bg: #ffffff;
+  --column-bg-image: none;
+  --task-bg: #f9fafb;
+  --task-bg-image: none;
+  --text-primary: #111827;
+  --text-secondary: #6b7280;
+  --text-muted: #9ca3af;
+  --border: #e5e7eb;
+  --form-bg: #f9fafb;
+  --surface: #ffffff;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; }
+
+input, button {
+  font-family: var(--app-font);
+  background: var(--surface);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  outline: none;
+}
+
+input::placeholder { color: var(--text-muted); }
