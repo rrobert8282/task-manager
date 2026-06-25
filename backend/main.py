@@ -1,12 +1,14 @@
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
 from typing import Optional
 from datetime import date
 import json
 from database import get_db, engine
 import models
+import auth
 
 models.Base.metadata.create_all(bind=engine)
 
@@ -20,16 +22,58 @@ app.add_middleware(
 )
 
 # --- Helpers ---
-def get_state(db: Session) -> models.AppState:
-    state = db.query(models.AppState).first()
+def get_state(user_id: int, db: Session) -> models.AppState:
+    state = db.query(models.AppState).filter(models.AppState.user_id == user_id).first()
     if not state:
-        state = models.AppState(coins = 100)
+        state = models.AppState(coins=100, user_id=user_id)
         db.add(state)
         db.commit()
         db.refresh(state)
     return state
 
-# --- Schemas ---
+# --- Auth schemas ---
+class RegisterSchema(BaseModel):
+    email:    str
+    password: str
+    username: str
+
+class TokenSchema(BaseModel):
+    access_token: str
+    token_type:   str
+    username:     str
+    email:        str
+
+# --- Auth routes ---
+@app.post("/auth/register", response_model=TokenSchema)
+def register(data: RegisterSchema, db: Session = Depends(get_db)):
+    existing = db.query(models.User).filter(models.User.email == data.email).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Email already registered")
+    user = models.User(
+        email=data.email,
+        username=data.username,
+        hashed_password=auth.hash_password(data.password),
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    get_state(user.id, db)
+    token = auth.create_token(user.id)
+    return {"access_token": token, "token_type": "bearer", "username": user.username, "email": user.email}
+
+@app.post("/auth/login", response_model=TokenSchema)
+def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    user = db.query(models.User).filter(models.User.email == form.username).first()
+    if not user or not auth.verify_password(form.password, user.hashed_password):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    token = auth.create_token(user.id)
+    return {"access_token": token, "token_type": "bearer", "username": user.username, "email": user.email}
+
+@app.get("/auth/me")
+def me(current_user: models.User = Depends(auth.get_current_user)):
+    return {"id": current_user.id, "email": current_user.email, "username": current_user.username}
+
+# --- Task schemas ---
 class TaskCreate(BaseModel):
     title:       str
     description: str = ""
@@ -50,8 +94,13 @@ class TaskUpdate(BaseModel):
 
 # --- Task routes ---
 @app.get("/tasks")
-def get_tasks(task_type: Optional[str] = None, is_shared: Optional[bool] = None, db: Session = Depends(get_db)):
-    query = db.query(models.Task)
+def get_tasks(
+    task_type: Optional[str] = None,
+    is_shared: Optional[bool] = None,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    query = db.query(models.Task).filter(models.Task.user_id == current_user.id)
     if task_type:
         query = query.filter(models.Task.task_type == task_type)
     if is_shared is not None:
@@ -59,16 +108,28 @@ def get_tasks(task_type: Optional[str] = None, is_shared: Optional[bool] = None,
     return query.all()
 
 @app.post("/tasks", status_code=201)
-def create_task(task: TaskCreate, db: Session = Depends(get_db)):
-    new_task = models.Task(**task.dict())
+def create_task(
+    task: TaskCreate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    new_task = models.Task(**task.dict(), user_id=current_user.id)
     db.add(new_task)
     db.commit()
     db.refresh(new_task)
     return new_task
 
 @app.patch("/tasks/{task_id}")
-def update_task(task_id: int, task: TaskUpdate, db: Session = Depends(get_db)):
-    db_task = db.query(models.Task).filter(models.Task.id == task_id).first()
+def update_task(
+    task_id: int,
+    task: TaskUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    db_task = db.query(models.Task).filter(
+        models.Task.id == task_id,
+        models.Task.user_id == current_user.id
+    ).first()
     if not db_task:
         raise HTTPException(status_code=404, detail="Task not found")
     for key, value in task.dict(exclude_unset=True).items():
@@ -78,21 +139,35 @@ def update_task(task_id: int, task: TaskUpdate, db: Session = Depends(get_db)):
     return db_task
 
 @app.patch("/tasks/{task_id}/complete")
-def complete_task(task_id: int, db: Session = Depends(get_db)):
-    db_task = db.query(models.Task).filter(models.Task.id == task_id).first()
+def complete_task(
+    task_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    db_task = db.query(models.Task).filter(
+        models.Task.id == task_id,
+        models.Task.user_id == current_user.id
+    ).first()
     if not db_task:
         raise HTTPException(status_code=404, detail="Task not found")
     db_task.done = True
     db_task.last_completed = date.today()
-    state = get_state(db)
+    state = get_state(current_user.id, db)
     state.coins += 10
     db.commit()
     db.refresh(db_task)
     return {"task": {"id": db_task.id, "done": db_task.done}, "coins_earned": 10, "total_coins": state.coins}
 
 @app.delete("/tasks/{task_id}", status_code=204)
-def delete_task(task_id: int, db: Session = Depends(get_db)):
-    db_task = db.query(models.Task).filter(models.Task.id == task_id).first()
+def delete_task(
+    task_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    db_task = db.query(models.Task).filter(
+        models.Task.id == task_id,
+        models.Task.user_id == current_user.id
+    ).first()
     if not db_task:
         raise HTTPException(status_code=404, detail="Task not found")
     db.delete(db_task)
@@ -111,71 +186,84 @@ def seed_store(db: Session = Depends(get_db)):
     if db.query(models.StoreItem).count() > 0:
         return {"message": "already seeded"}
     items = [
-    # Color schemes — only colors, no backgrounds
-    models.StoreItem(name="Default",  description="Classic clean look",   item_type=models.ItemType.color_scheme, cost=0,   css_value='{"--app-accent":"#3b82f6","--column-bg":"#ffffff","--task-bg":"#f9fafb","--text-primary":"#111827","--text-secondary":"#6b7280","--text-muted":"#9ca3af","--border":"#e5e7eb","--form-bg":"#f9fafb","--surface":"#ffffff","--app-bg":"#f3f4f6"}', preview="#3b82f6"),
-    models.StoreItem(name="Forest",   description="Calm green tones",     item_type=models.ItemType.color_scheme, cost=0,   css_value='{"--app-accent":"#16a34a","--column-bg":"#dcfce7","--task-bg":"#f0fdf4","--text-primary":"#14532d","--text-secondary":"#166534","--text-muted":"#4ade80","--border":"#86efac","--form-bg":"#dcfce7","--surface":"#dcfce7","--app-bg":"#f0fdf4"}', preview="#16a34a"),
-    models.StoreItem(name="Sunset",   description="Warm orange and pink", item_type=models.ItemType.color_scheme, cost=50,  css_value='{"--app-accent":"#f97316","--column-bg":"#ffedd5","--task-bg":"#fff7ed","--text-primary":"#7c2d12","--text-secondary":"#9a3412","--text-muted":"#fb923c","--border":"#fed7aa","--form-bg":"#ffedd5","--surface":"#ffedd5","--app-bg":"#fff7ed"}', preview="#f97316"),
-    models.StoreItem(name="Midnight", description="Dark mode vibes",      item_type=models.ItemType.color_scheme, cost=50,  css_value='{"--app-accent":"#818cf8","--column-bg":"#1e293b","--task-bg":"#0f172a","--text-primary":"#f1f5f9","--text-secondary":"#94a3b8","--text-muted":"#64748b","--border":"#334155","--form-bg":"#1e293b","--surface":"#1e293b","--app-bg":"#0f172a"}', preview="#818cf8"),
-    models.StoreItem(name="Rose",     description="Soft pink palette",    item_type=models.ItemType.color_scheme, cost=100, css_value='{"--app-accent":"#e11d48","--column-bg":"#ffe4e6","--task-bg":"#fff1f2","--text-primary":"#881337","--text-secondary":"#9f1239","--text-muted":"#fb7185","--border":"#fecdd3","--form-bg":"#ffe4e6","--surface":"#ffe4e6","--app-bg":"#fff1f2"}', preview="#e11d48"),
-    # Fonts
-    models.StoreItem(name="Default Sans", description="Clean system font",   item_type=models.ItemType.font, cost=0,   css_value="system-ui, sans-serif",       preview="Aa"),
-    models.StoreItem(name="Roboto",       description="Modern and readable", item_type=models.ItemType.font, cost=0,   css_value="'Roboto', sans-serif",         preview="Aa"),
-    models.StoreItem(name="Playfair",     description="Elegant serif",       item_type=models.ItemType.font, cost=75,  css_value="'Playfair Display', serif",    preview="Aa"),
-    models.StoreItem(name="Space Mono",   description="Techy monospace",     item_type=models.ItemType.font, cost=75,  css_value="'Space Mono', monospace",      preview="Aa"),
-    models.StoreItem(name="Pacifico",     description="Fun and friendly",    item_type=models.ItemType.font, cost=100, css_value="'Pacifico', cursive",          preview="Aa"),
-    # App backgrounds — independent from color schemes
-    models.StoreItem(name="Clean",    description="No background",       item_type=models.ItemType.app_bg, cost=0,   css_value="none",                                                        preview="#ffffff"),
-    models.StoreItem(name="Soft Grid",description="Subtle dot grid",     item_type=models.ItemType.app_bg, cost=0,   css_value="radial-gradient(circle, #e5e7eb 1px, transparent 1px)",     preview="#e5e7eb"),
-    models.StoreItem(name="Aurora",   description="Gradient sky",        item_type=models.ItemType.app_bg, cost=150, css_value="linear-gradient(135deg, #667eea 0%, #764ba2 100%)",          preview="linear-gradient(135deg,#667eea,#764ba2)"),
-    models.StoreItem(name="Ocean",    description="Deep blue gradient",  item_type=models.ItemType.app_bg, cost=150, css_value="linear-gradient(135deg, #0093E9 0%, #80D0C7 100%)",          preview="linear-gradient(135deg,#0093E9,#80D0C7)"),
-    # Column decorations — placeholder, drop your assets in later
-    models.StoreItem(name="Plain",       description="Default column style", item_type=models.ItemType.column_bg, cost=0,   css_value="none",    preview="#ffffff", is_animated=False),
-    models.StoreItem(name="Custom GIF",  description="Upload your own GIF",  item_type=models.ItemType.column_bg, cost=0,   css_value="none",    preview="#e5e7eb", is_animated=True),
-    # Task row decorations — placeholder
-    models.StoreItem(name="Plain row",   description="Default task style",   item_type=models.ItemType.task_bg,   cost=0,   css_value="none",    preview="#ffffff", is_animated=False),
-]
+        models.StoreItem(name="Default",  description="Classic clean look",   item_type=models.ItemType.color_scheme, cost=0,   css_value='{"--app-accent":"#3b82f6","--column-bg":"#ffffff","--task-bg":"#f9fafb","--text-primary":"#111827","--text-secondary":"#6b7280","--text-muted":"#9ca3af","--border":"#e5e7eb","--form-bg":"#f9fafb","--surface":"#ffffff","--app-bg":"#f3f4f6"}', preview="#3b82f6"),
+        models.StoreItem(name="Forest",   description="Calm green tones",     item_type=models.ItemType.color_scheme, cost=0,   css_value='{"--app-accent":"#16a34a","--column-bg":"#dcfce7","--task-bg":"#f0fdf4","--text-primary":"#14532d","--text-secondary":"#166534","--text-muted":"#4ade80","--border":"#86efac","--form-bg":"#dcfce7","--surface":"#dcfce7","--app-bg":"#f0fdf4"}', preview="#16a34a"),
+        models.StoreItem(name="Sunset",   description="Warm orange and pink", item_type=models.ItemType.color_scheme, cost=50,  css_value='{"--app-accent":"#f97316","--column-bg":"#ffedd5","--task-bg":"#fff7ed","--text-primary":"#7c2d12","--text-secondary":"#9a3412","--text-muted":"#fb923c","--border":"#fed7aa","--form-bg":"#ffedd5","--surface":"#ffedd5","--app-bg":"#fff7ed"}', preview="#f97316"),
+        models.StoreItem(name="Midnight", description="Dark mode vibes",      item_type=models.ItemType.color_scheme, cost=50,  css_value='{"--app-accent":"#818cf8","--column-bg":"#1e293b","--task-bg":"#0f172a","--text-primary":"#f1f5f9","--text-secondary":"#94a3b8","--text-muted":"#64748b","--border":"#334155","--form-bg":"#1e293b","--surface":"#1e293b","--app-bg":"#0f172a"}', preview="#818cf8"),
+        models.StoreItem(name="Rose",     description="Soft pink palette",    item_type=models.ItemType.color_scheme, cost=100, css_value='{"--app-accent":"#e11d48","--column-bg":"#ffe4e6","--task-bg":"#fff1f2","--text-primary":"#881337","--text-secondary":"#9f1239","--text-muted":"#fb7185","--border":"#fecdd3","--form-bg":"#ffe4e6","--surface":"#ffe4e6","--app-bg":"#fff1f2"}', preview="#e11d48"),
+        models.StoreItem(name="Default Sans", description="Clean system font",   item_type=models.ItemType.font, cost=0,   css_value="system-ui, sans-serif",       preview="Aa"),
+        models.StoreItem(name="Roboto",       description="Modern and readable", item_type=models.ItemType.font, cost=0,   css_value="'Roboto', sans-serif",         preview="Aa"),
+        models.StoreItem(name="Playfair",     description="Elegant serif",       item_type=models.ItemType.font, cost=75,  css_value="'Playfair Display', serif",    preview="Aa"),
+        models.StoreItem(name="Space Mono",   description="Techy monospace",     item_type=models.ItemType.font, cost=75,  css_value="'Space Mono', monospace",      preview="Aa"),
+        models.StoreItem(name="Pacifico",     description="Fun and friendly",    item_type=models.ItemType.font, cost=100, css_value="'Pacifico', cursive",          preview="Aa"),
+        models.StoreItem(name="Clean",     description="No background",      item_type=models.ItemType.app_bg, cost=0,   css_value="none",                                                      preview="#ffffff"),
+        models.StoreItem(name="Soft Grid", description="Subtle dot grid",    item_type=models.ItemType.app_bg, cost=0,   css_value="radial-gradient(circle, #e5e7eb 1px, transparent 1px)",   preview="#e5e7eb"),
+        models.StoreItem(name="Aurora",    description="Gradient sky",       item_type=models.ItemType.app_bg, cost=150, css_value="linear-gradient(135deg, #667eea 0%, #764ba2 100%)",        preview="linear-gradient(135deg,#667eea,#764ba2)"),
+        models.StoreItem(name="Ocean",     description="Deep blue gradient", item_type=models.ItemType.app_bg, cost=150, css_value="linear-gradient(135deg, #0093E9 0%, #80D0C7 100%)",        preview="linear-gradient(135deg,#0093E9,#80D0C7)"),
+        models.StoreItem(name="Plain",     description="Default column style", item_type=models.ItemType.column_bg, cost=0, css_value="none", preview="#ffffff"),
+        models.StoreItem(name="Plain row", description="Default task style",   item_type=models.ItemType.task_bg,   cost=0, css_value="none", preview="#ffffff"),
+    ]
     db.add_all(items)
     db.commit()
     return {"message": "seeded", "count": len(items)}
 
-# --- App state routes (coins + equipped) ---
+# --- State routes ---
 @app.get("/state")
-def get_app_state(db: Session = Depends(get_db)):
-    state = get_state(db)
+def get_app_state(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    state = get_state(current_user.id, db)
     return {"coins": state.coins, "equipped": json.loads(state.equipped_json)}
 
 @app.post("/store/buy/{item_id}")
-def buy_item(item_id: int, db: Session = Depends(get_db)):
+def buy_item(
+    item_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
     item = db.query(models.StoreItem).filter(models.StoreItem.id == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
-    already = db.query(models.Purchase).filter(models.Purchase.item_id == item_id).first()
+    already = db.query(models.Purchase).filter(
+        models.Purchase.item_id == item_id,
+        models.Purchase.user_id == current_user.id
+    ).first()
     if already:
         return {"message": "already owned"}
-    state = get_state(db)
+    state = get_state(current_user.id, db)
     if item.cost > 0 and state.coins < item.cost:
         raise HTTPException(status_code=400, detail="Not enough coins")
     state.coins -= item.cost
-    db.add(models.Purchase(item_id=item_id))
+    db.add(models.Purchase(item_id=item_id, user_id=current_user.id))
     db.commit()
     return {"message": "purchased", "coins": state.coins}
 
 @app.get("/store/inventory")
-def get_inventory(db: Session = Depends(get_db)):
-    purchases = db.query(models.Purchase).all()
+def get_inventory(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    purchases = db.query(models.Purchase).filter(models.Purchase.user_id == current_user.id).all()
     item_ids = [p.item_id for p in purchases]
-    items = db.query(models.StoreItem).filter(models.StoreItem.id.in_(item_ids)).all()
-    return items
+    return db.query(models.StoreItem).filter(models.StoreItem.id.in_(item_ids)).all()
 
 @app.post("/store/equip/{item_id}")
-def equip_item(item_id: int, db: Session = Depends(get_db)):
+def equip_item(
+    item_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
     item = db.query(models.StoreItem).filter(models.StoreItem.id == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
-    owned = db.query(models.Purchase).filter(models.Purchase.item_id == item_id).first()
+    owned = db.query(models.Purchase).filter(
+        models.Purchase.item_id == item_id,
+        models.Purchase.user_id == current_user.id
+    ).first()
     if not owned and item.cost > 0:
         raise HTTPException(status_code=403, detail="Item not owned")
-    state = get_state(db)
+    state = get_state(current_user.id, db)
     equipped = json.loads(state.equipped_json)
     equipped[item.item_type.value] = item_id
     state.equipped_json = json.dumps(equipped)

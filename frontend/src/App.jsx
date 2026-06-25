@@ -12,7 +12,25 @@ const COLUMNS = [
   { type: "date",   label: "Dates",  icon: "📆" },
 ]
 
-function TaskCard({ task, onToggle, onDelete }) {
+function SectionLabel({ icon, label, sublabel }) {
+  return (
+    <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 12 }}>
+      <h2 style={{
+        margin: 0, fontSize: 14, fontWeight: 600,
+        color: "var(--text-secondary)",
+        textTransform: "uppercase",
+        letterSpacing: "0.06em",
+      }}>
+        {icon} {label}
+      </h2>
+      {sublabel && (
+        <span style={{ fontSize: 12, color: "var(--text-muted)" }}>— {sublabel}</span>
+      )}
+    </div>
+  )
+}
+
+function TaskCard({ task, onToggle, onDelete, readOnly = false }) {
   return (
     <div style={{
       background: "var(--surface)",
@@ -25,9 +43,7 @@ function TaskCard({ task, onToggle, onDelete }) {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
         <div style={{ flex: 1 }}>
           <p style={{
-            margin: 0,
-            fontWeight: 500,
-            fontSize: 14,
+            margin: 0, fontWeight: 500, fontSize: 14,
             color: "var(--text-primary)",
             textDecoration: task.done ? "line-through" : "none",
           }}>
@@ -49,14 +65,16 @@ function TaskCard({ task, onToggle, onDelete }) {
             </p>
           )}
         </div>
-        <div style={{ display: "flex", gap: 4, marginLeft: 8 }}>
-          <button onClick={() => onToggle(task)} style={{ fontSize: 12, padding: "2px 8px" }}>
-            {task.done ? "Undo" : "Done"}
-          </button>
-          <button onClick={() => onDelete(task.id)} style={{ fontSize: 12, padding: "2px 8px", color: "#ef4444" }}>
-            ✕
-          </button>
-        </div>
+        {!readOnly && (
+          <div style={{ display: "flex", gap: 4, marginLeft: 8 }}>
+            <button onClick={() => onToggle(task)} style={{ fontSize: 12, padding: "2px 8px" }}>
+              {task.done ? "Undo" : "Done"}
+            </button>
+            <button onClick={() => onDelete(task.id)} style={{ fontSize: 12, padding: "2px 8px", color: "#ef4444" }}>
+              ✕
+            </button>
+          </div>
+        )}
       </div>
     </div>
   )
@@ -110,7 +128,7 @@ function AddTaskForm({ columnType, onAdd }) {
   )
 }
 
-function Column({ col, tasks, onAdd, onToggle, onDelete }) {
+function Column({ col, tasks, onAdd, onToggle, onDelete, readOnly = false }) {
   return (
     <div style={{
       flex: 1,
@@ -127,14 +145,14 @@ function Column({ col, tasks, onAdd, onToggle, onDelete }) {
         </span>
       </h2>
       {tasks.map(task => (
-        <TaskCard key={task.id} task={task} onToggle={onToggle} onDelete={onDelete} />
+        <TaskCard key={task.id} task={task} onToggle={onToggle} onDelete={onDelete} readOnly={readOnly} />
       ))}
       {tasks.length === 0 && (
         <p style={{ fontSize: 13, color: "var(--text-muted)", textAlign: "center", margin: "20px 0" }}>
-          No tasks yet
+          {readOnly ? "Nothing here yet" : "No tasks yet"}
         </p>
       )}
-      <AddTaskForm columnType={col.type} onAdd={onAdd} />
+      {!readOnly && <AddTaskForm columnType={col.type} onAdd={onAdd} />}
     </div>
   )
 }
@@ -195,17 +213,17 @@ export default function App() {
   return (
   <div style={{
     minHeight: "100vh",
-    backgroundColor: "var(--app-bg)",          // color only
-    backgroundImage: "var(--app-bg-image)",    // image only — never conflict
+    backgroundColor: "var(--app-bg)",
+    backgroundImage: "var(--app-bg-image)",
     backgroundSize: "cover",
     backgroundPosition: "center",
     backgroundAttachment: "fixed",
     fontFamily: "var(--app-font)",
   }}>
-    <div style={{ maxWidth: 960, margin: "0 auto", padding: "32px 16px" }}>
+    <div style={{ maxWidth: 1200, margin: "0 auto", padding: "32px 16px" }}>
 
       {/* Header */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 32 }}>
         <h1 style={{ margin: 0, fontSize: 22, color: "var(--app-accent)" }}>Task Manager</h1>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <span style={{ fontSize: 14, fontWeight: 500, color: "var(--text-primary)" }}>🪙 {coins}</span>
@@ -216,10 +234,8 @@ export default function App() {
       </div>
 
       {/* My Tasks */}
-      <h2 style={{ fontSize: 14, fontWeight: 500, color: "var(--text-secondary)", marginBottom: 12, textTransform: "uppercase", letterSpacing: "0.05em" }}>
-        My Tasks
-      </h2>
-      <div style={{ display: "flex", gap: 16, alignItems: "flex-start", marginBottom: 32 }}>
+      <SectionLabel icon="👤" label="My Tasks" />
+      <div style={{ display: "flex", gap: 16, alignItems: "flex-start", marginBottom: 40 }}>
         {COLUMNS.map(col => (
           <Column key={col.type} col={col}
             tasks={byType(col.type, false)}
@@ -230,10 +246,21 @@ export default function App() {
         ))}
       </div>
 
+      {/* Buddy Tasks — read only */}
+      <SectionLabel icon="👥" label="Buddy's Tasks" sublabel="read only — buddy not connected yet" />
+      <div style={{ display: "flex", gap: 16, alignItems: "flex-start", marginBottom: 40 }}>
+        {COLUMNS.map(col => (
+          <Column key={`buddy-${col.type}`} col={col}
+            tasks={[]}
+            onToggle={() => {}}
+            onDelete={() => {}}
+            readOnly
+          />
+        ))}
+      </div>
+
       {/* Shared Tasks */}
-      <h2 style={{ fontSize: 14, fontWeight: 500, color: "var(--text-secondary)", marginBottom: 12, textTransform: "uppercase", letterSpacing: "0.05em" }}>
-        🤝 Shared with Buddy
-      </h2>
+      <SectionLabel icon="🤝" label="Shared Tasks" sublabel="visible to both you and your buddy" />
       <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
         {COLUMNS.map(col => (
           <Column key={`shared-${col.type}`} col={col}
