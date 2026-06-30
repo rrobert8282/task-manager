@@ -58,7 +58,7 @@ def register(data: RegisterSchema, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(user)
     get_state(user.id, db)
-    token = auth.create_token(user.id)
+    token = auth.create_access_token({"sub": user.username})
     return {"access_token": token, "token_type": "bearer", "username": user.username, "email": user.email}
 
 @app.post("/auth/login", response_model=TokenSchema)
@@ -66,7 +66,7 @@ def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get
     user = db.query(models.User).filter(models.User.email == form.username).first()
     if not user or not auth.verify_password(form.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid email or password")
-    token = auth.create_token(user.id)
+    token = auth.create_access_token({"sub": user.username})
     return {"access_token": token, "token_type": "bearer", "username": user.username, "email": user.email}
 
 @app.get("/auth/me")

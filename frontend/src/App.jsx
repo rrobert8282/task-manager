@@ -4,7 +4,16 @@ import { loadFonts, applyTheme, loadEquipped } from "./theme"
 import Store from "./Store"
 import "./theme.css"
 
+import Auth from "./Auth"
+
 const API = "http://127.0.0.1:8000"
+
+// Axios interceptor — attaches token to every request automatically
+axios.interceptors.request.use(config => {
+  const token = localStorage.getItem("token")
+  if (token) config.headers.Authorization = `Bearer ${token}`
+  return config
+})
 
 const COLUMNS = [
   { type: "daily",  label: "Daily",  icon: "🌅" },
@@ -158,34 +167,44 @@ function Column({ col, tasks, onAdd, onToggle, onDelete, readOnly = false }) {
 }
 
 export default function App() {
+  const [user, setUser]       = useState(() => {
+    const u = localStorage.getItem("user")
+    return u ? JSON.parse(u) : null
+  })
   const [tasks, setTasks]     = useState([])
   const [showStore, setStore] = useState(false)
-  const [coins, setCoins]     = useState(() => parseInt(localStorage.getItem("coins") || "0"))
+  const [coins, setCoins]     = useState(0)
+
+  function handleLogin(data) {
+    localStorage.setItem("token", data.access_token)
+    localStorage.setItem("user", JSON.stringify({ username: data.username, email: data.email }))
+    setUser({ username: data.username, email: data.email })
+  }
+
+  function handleLogout() {
+    localStorage.removeItem("token")
+    localStorage.removeItem("user")
+    setUser(null)
+    setTasks([])
+    setCoins(0)
+  }
 
   useEffect(() => {
-  loadFonts()
-  fetchTasks()
-  axios.get(`${API}/state`).then(res => {
-    setCoins(res.data.coins)
-    const equippedIds = res.data.equipped
-    axios.get(`${API}/store/items`).then(itemsRes => {
-      const equippedItems = {}
-      Object.entries(equippedIds).forEach(([type, id]) => {
-        const found = itemsRes.data.find(i => i.id === id)
-        if (found) equippedItems[type] = found
+    if (!user) return
+    loadFonts()
+    fetchTasks()
+    axios.get(`${API}/state`).then(res => {
+      setCoins(res.data.coins)
+      axios.get(`${API}/store/items`).then(itemsRes => {
+        const equippedItems = {}
+        Object.entries(res.data.equipped).forEach(([type, id]) => {
+          const found = itemsRes.data.find(i => i.id === id)
+          if (found) equippedItems[type] = found
+        })
+        applyTheme(equippedItems)
       })
-      applyTheme(equippedItems)
     })
-  })
-}, [])
-
-  function addCoins(n) {
-    setCoins(prev => { const next = prev + n; localStorage.setItem("coins", next); return next })
-  }
-
-  function spendCoins(n) {
-    setCoins(prev => { const next = Math.max(0, prev - n); localStorage.setItem("coins", next); return next })
-  }
+  }, [user])
 
   async function fetchTasks() {
     const res = await axios.get(`${API}/tasks`)
@@ -199,7 +218,7 @@ export default function App() {
 
   async function toggleDone(task) {
     const res = await axios.patch(`${API}/tasks/${task.id}/complete`)
-    if (!task.done) addCoins(res.data.coins_earned)
+    if (!task.done) setCoins(res.data.total_coins)
     fetchTasks()
   }
 
@@ -210,73 +229,80 @@ export default function App() {
 
   const byType = (type, shared) => tasks.filter(t => t.task_type === type && t.is_shared === shared)
 
+  // Show login page if not authenticated
+  if (!user) return <Auth onLogin={handleLogin} />
+
   return (
-  <div style={{
-    minHeight: "100vh",
-    backgroundColor: "var(--app-bg)",
-    backgroundImage: "var(--app-bg-image)",
-    backgroundSize: "cover",
-    backgroundPosition: "center",
-    backgroundAttachment: "fixed",
-    fontFamily: "var(--app-font)",
-  }}>
-    <div style={{ maxWidth: 1200, margin: "0 auto", padding: "32px 16px" }}>
+    <div style={{
+      minHeight: "100vh",
+      backgroundColor: "var(--app-bg)",
+      backgroundImage: "var(--app-bg-image)",
+      backgroundSize: "cover",
+      backgroundPosition: "center",
+      backgroundAttachment: "fixed",
+      fontFamily: "var(--app-font)",
+    }}>
+      <div style={{ maxWidth: 1200, margin: "0 auto", padding: "32px 16px" }}>
 
-      {/* Header */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 32 }}>
-        <h1 style={{ margin: 0, fontSize: 22, color: "var(--app-accent)" }}>Task Manager</h1>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <span style={{ fontSize: 14, fontWeight: 500, color: "var(--text-primary)" }}>🪙 {coins}</span>
-          <button onClick={() => setStore(true)} style={{ fontSize: 13, padding: "6px 14px", borderRadius: 8, border: "1px solid var(--border)", cursor: "pointer" }}>
-            🛍️ Store
-          </button>
+        {/* Header */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 32 }}>
+          <h1 style={{ margin: 0, fontSize: 22, color: "var(--app-accent)" }}>Task Manager</h1>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>👤 {user.username}</span>
+            <span style={{ fontSize: 14, fontWeight: 500, color: "var(--text-primary)" }}>🪙 {coins}</span>
+            <button onClick={() => setStore(true)} style={{ fontSize: 13, padding: "6px 14px", borderRadius: 8, border: "1px solid var(--border)", cursor: "pointer" }}>
+              🛍️ Store
+            </button>
+            <button onClick={handleLogout} style={{ fontSize: 13, padding: "6px 14px", borderRadius: 8, border: "1px solid var(--border)", cursor: "pointer", color: "#ef4444" }}>
+              Sign out
+            </button>
+          </div>
         </div>
+
+        {/* My Tasks */}
+        <SectionLabel icon="👤" label="My Tasks" />
+        <div style={{ display: "flex", gap: 16, alignItems: "flex-start", marginBottom: 40 }}>
+          {COLUMNS.map(col => (
+            <Column key={col.type} col={col}
+              tasks={byType(col.type, false)}
+              onAdd={data => addTask({ ...data, is_shared: false })}
+              onToggle={toggleDone}
+              onDelete={deleteTask}
+            />
+          ))}
+        </div>
+
+        {/* Buddy Tasks */}
+        <SectionLabel icon="👥" label="Buddy's Tasks" sublabel="read only — buddy not connected yet" />
+        <div style={{ display: "flex", gap: 16, alignItems: "flex-start", marginBottom: 40 }}>
+          {COLUMNS.map(col => (
+            <Column key={`buddy-${col.type}`} col={col}
+              tasks={[]}
+              onToggle={() => {}}
+              onDelete={() => {}}
+              readOnly
+            />
+          ))}
+        </div>
+
+        {/* Shared Tasks */}
+        <SectionLabel icon="🤝" label="Shared Tasks" sublabel="visible to both you and your buddy" />
+        <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
+          {COLUMNS.map(col => (
+            <Column key={`shared-${col.type}`} col={col}
+              tasks={byType(col.type, true)}
+              onAdd={data => addTask({ ...data, is_shared: true })}
+              onToggle={toggleDone}
+              onDelete={deleteTask}
+            />
+          ))}
+        </div>
+
       </div>
 
-      {/* My Tasks */}
-      <SectionLabel icon="👤" label="My Tasks" />
-      <div style={{ display: "flex", gap: 16, alignItems: "flex-start", marginBottom: 40 }}>
-        {COLUMNS.map(col => (
-          <Column key={col.type} col={col}
-            tasks={byType(col.type, false)}
-            onAdd={data => addTask({ ...data, is_shared: false })}
-            onToggle={toggleDone}
-            onDelete={deleteTask}
-          />
-        ))}
-      </div>
-
-      {/* Buddy Tasks — read only */}
-      <SectionLabel icon="👥" label="Buddy's Tasks" sublabel="read only — buddy not connected yet" />
-      <div style={{ display: "flex", gap: 16, alignItems: "flex-start", marginBottom: 40 }}>
-        {COLUMNS.map(col => (
-          <Column key={`buddy-${col.type}`} col={col}
-            tasks={[]}
-            onToggle={() => {}}
-            onDelete={() => {}}
-            readOnly
-          />
-        ))}
-      </div>
-
-      {/* Shared Tasks */}
-      <SectionLabel icon="🤝" label="Shared Tasks" sublabel="visible to both you and your buddy" />
-      <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
-        {COLUMNS.map(col => (
-          <Column key={`shared-${col.type}`} col={col}
-            tasks={byType(col.type, true)}
-            onAdd={data => addTask({ ...data, is_shared: true })}
-            onToggle={toggleDone}
-            onDelete={deleteTask}
-          />
-        ))}
-      </div>
-
+      {showStore && (
+        <Store coins={coins} onClose={() => setStore(false)} onCoinsUpdate={setCoins} />
+      )}
     </div>
-
-    {showStore && (
-      <Store coins={coins} onClose={() => setStore(false)} onCoinsUpdate={setCoins} />
-    )}
-  </div>
-)
+  )
 }
