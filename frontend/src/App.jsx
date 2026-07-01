@@ -1,13 +1,16 @@
 import { useState, useEffect } from "react"
 import axios from "axios"
-import { loadFonts, applyTheme } from "./theme"
+import { loadFonts, applyTheme, spriteUrl } from "./theme"
 import Store from "./Store"
 import "./theme.css"
 import Buddy from "./Buddy"
 import TaskComments from "./TaskComments"
 import Auth from "./Auth"
+import Profile from "./Profile"
 
 const API = "http://127.0.0.1:8000"
+
+const SPRITE_KEYS = new Set(["card_sprite", "column_sprite", "bg_overlay_sprite", "profile_sprite"])
 
 axios.interceptors.request.use(config => {
   const token = localStorage.getItem("token")
@@ -39,7 +42,7 @@ function SectionLabel({ icon, label, sublabel }) {
   )
 }
 
-function TaskCard({ task, onToggle, onDelete, readOnly = false }) {
+function TaskCard({ task, onToggle, onDelete, readOnly = false, cardSprite = null }) {
   return (
     <div style={{
       background: "var(--surface)",
@@ -48,7 +51,23 @@ function TaskCard({ task, onToggle, onDelete, readOnly = false }) {
       padding: "10px 12px",
       marginBottom: 8,
       opacity: task.done ? 0.5 : 1,
+      position: "relative",
     }}>
+      {/* Card sprite badge — bottom right corner */}
+      {cardSprite && (
+        <img
+          src={cardSprite}
+          alt=""
+          style={{
+            position: "absolute",
+            bottom: 8, right: 8,
+            width: 28, height: 28,
+            objectFit: "contain",
+            pointerEvents: "none",
+            opacity: 0.85,
+          }}
+        />
+      )}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
         <div style={{ flex: 1 }}>
           <p style={{
@@ -138,7 +157,7 @@ function AddTaskForm({ columnType, onAdd }) {
   )
 }
 
-function Column({ col, tasks, onAdd, onToggle, onDelete, readOnly = false }) {
+function Column({ col, tasks, onAdd, onToggle, onDelete, readOnly = false, columnSprite = null, cardSprite = null }) {
   return (
     <div style={{
       flex: 1,
@@ -148,6 +167,22 @@ function Column({ col, tasks, onAdd, onToggle, onDelete, readOnly = false }) {
       padding: 14,
       minWidth: 0,
     }}>
+      {/* Column sprite banner */}
+      {columnSprite && (
+        <div style={{
+          width: "100%", height: 56,
+          marginBottom: 10,
+          borderRadius: 6,
+          overflow: "hidden",
+          border: "1px solid var(--border)",
+        }}>
+          <img
+            src={columnSprite}
+            alt=""
+            style={{ width: "100%", height: "100%", objectFit: "cover" }}
+          />
+        </div>
+      )}
       <h2 style={{ margin: "0 0 12px", fontSize: 15, fontWeight: 600, color: "var(--text-primary)" }}>
         {col.icon} {col.label}
         <span style={{ marginLeft: 8, fontSize: 12, color: "var(--text-muted)", fontWeight: 400 }}>
@@ -155,7 +190,14 @@ function Column({ col, tasks, onAdd, onToggle, onDelete, readOnly = false }) {
         </span>
       </h2>
       {tasks.map(task => (
-        <TaskCard key={task.id} task={task} onToggle={onToggle} onDelete={onDelete} readOnly={readOnly} />
+        <TaskCard
+          key={task.id}
+          task={task}
+          onToggle={onToggle}
+          onDelete={onDelete}
+          readOnly={readOnly}
+          cardSprite={cardSprite}
+        />
       ))}
       {tasks.length === 0 && (
         <p style={{ fontSize: 13, color: "var(--text-muted)", textAlign: "center", margin: "20px 0" }}>
@@ -168,7 +210,7 @@ function Column({ col, tasks, onAdd, onToggle, onDelete, readOnly = false }) {
 }
 
 export default function App() {
-  const [user, setUser]                         = useState(() => {
+  const [user, setUser] = useState(() => {
     const u = localStorage.getItem("user")
     return u ? JSON.parse(u) : null
   })
@@ -177,6 +219,7 @@ export default function App() {
   const [coins, setCoins]                       = useState(0)
   const [buddyTasks, setBuddyTasks]             = useState([])
   const [buddySharedTasks, setBuddySharedTasks] = useState([])
+  const [equippedSprites, setEquippedSprites]   = useState({})
 
   function handleLogin(data) {
     localStorage.setItem("token", data.access_token)
@@ -190,6 +233,7 @@ export default function App() {
     setUser(null)
     setTasks([])
     setCoins(0)
+    setEquippedSprites({})
   }
 
   useEffect(() => {
@@ -200,11 +244,25 @@ export default function App() {
     fetchBuddySharedTasks()
     axios.get(`${API}/state`).then(res => {
       setCoins(res.data.coins)
+      const eq = res.data.equipped
+
+      // Extract sprite paths into component state
+      const sprites = {}
+      SPRITE_KEYS.forEach(key => { if (eq[key]) sprites[key] = eq[key] })
+      setEquippedSprites(sprites)
+
+      // Build equippedItems for applyTheme
+      // Sprite slots are path strings — pass through directly
+      // Regular slots are item IDs — look up the full item object
       axios.get(`${API}/store/items`).then(itemsRes => {
         const equippedItems = {}
-        Object.entries(res.data.equipped).forEach(([type, id]) => {
-          const found = itemsRes.data.find(i => i.id === id)
-          if (found) equippedItems[type] = found
+        Object.entries(eq).forEach(([type, val]) => {
+          if (SPRITE_KEYS.has(type)) {
+            equippedItems[type] = val
+          } else {
+            const found = itemsRes.data.find(i => i.id === val)
+            if (found) equippedItems[type] = found
+          }
         })
         applyTheme(equippedItems)
       })
@@ -250,7 +308,10 @@ export default function App() {
     fetchTasks()
   }
 
-  const byType = (type, shared) => tasks.filter(t => t.task_type === type && t.is_shared === shared)
+  const byType       = (type, shared) => tasks.filter(t => t.task_type === type && t.is_shared === shared)
+  const cardSprite   = equippedSprites.card_sprite        ? spriteUrl(equippedSprites.card_sprite)        : null
+  const columnSprite = equippedSprites.column_sprite      ? spriteUrl(equippedSprites.column_sprite)      : null
+  const bgOverlay    = equippedSprites.bg_overlay_sprite  ? spriteUrl(equippedSprites.bg_overlay_sprite)  : null
 
   if (!user) return <Auth onLogin={handleLogin} />
 
@@ -263,8 +324,23 @@ export default function App() {
       backgroundPosition: "center",
       backgroundAttachment: "fixed",
       fontFamily: "var(--app-font)",
+      position: "relative",
     }}>
-      <div style={{ maxWidth: 1200, margin: "0 auto", padding: "32px 16px" }}>
+
+      {/* Background overlay sprite — fixed, behind all content */}
+      {bgOverlay && (
+        <div style={{
+          position: "fixed", inset: 0,
+          backgroundImage: `url(${bgOverlay})`,
+          backgroundSize: "cover",
+          backgroundPosition: "center",
+          opacity: 0.2,
+          pointerEvents: "none",
+          zIndex: 0,
+        }} />
+      )}
+
+      <div style={{ maxWidth: 1200, margin: "0 auto", padding: "32px 16px", position: "relative", zIndex: 1 }}>
 
         {/* Header */}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 32 }}>
@@ -281,6 +357,9 @@ export default function App() {
           </div>
         </div>
 
+        {/* Profile */}
+        <Profile user={user} coins={coins} onCoinsUpdate={setCoins} />
+
         {/* My Tasks */}
         <SectionLabel icon="👤" label="My Tasks" />
         <div style={{ display: "flex", gap: 16, alignItems: "flex-start", marginBottom: 40 }}>
@@ -290,6 +369,8 @@ export default function App() {
               onAdd={data => addTask({ ...data, is_shared: false })}
               onToggle={toggleDone}
               onDelete={deleteTask}
+              columnSprite={columnSprite}
+              cardSprite={cardSprite}
             />
           ))}
         </div>
@@ -306,6 +387,8 @@ export default function App() {
               onToggle={() => {}}
               onDelete={() => {}}
               readOnly
+              columnSprite={columnSprite}
+              cardSprite={cardSprite}
             />
           ))}
         </div>
@@ -324,6 +407,8 @@ export default function App() {
               onAdd={data => addTask({ ...data, is_shared: true })}
               onToggle={toggleDone}
               onDelete={deleteTask}
+              columnSprite={columnSprite}
+              cardSprite={cardSprite}
             />
           ))}
         </div>

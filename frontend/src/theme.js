@@ -5,6 +5,15 @@ const FONTS = [
   "https://fonts.googleapis.com/css2?family=Pacifico&display=swap",
 ]
 
+// Base path for all sprite files in frontend/public/sprites/
+export const SPRITES_BASE = "/sprites"
+
+// Convert a stored path like "forest/card.gif" → "/sprites/forest/card.gif"
+export function spriteUrl(path) {
+  if (!path) return null
+  return `${SPRITES_BASE}/${path}`
+}
+
 export function loadFonts() {
   FONTS.forEach(href => {
     if (!document.querySelector(`link[href="${href}"]`)) {
@@ -38,10 +47,8 @@ export function applyTheme(equipped) {
     if (val === "none") {
       root.style.setProperty("--app-bg-image", "none")
     } else if (val.startsWith("url(")) {
-      // PNG, GIF, WebP, WebM poster
       root.style.setProperty("--app-bg-image", val)
     } else {
-      // CSS gradient
       root.style.setProperty("--app-bg-image", val)
     }
   }
@@ -56,6 +63,24 @@ export function applyTheme(equipped) {
   if (equipped.task_bg) {
     root.style.setProperty("--task-bg-image", equipped.task_bg.css_value)
   }
+
+  // ── Sprite slots ───────────────────────────────────────────────────────────
+  // Sprite values are stored as path strings (e.g. "forest/card.gif"),
+  // not item IDs. Each slot gets its own CSS variable.
+  const spriteSlots = {
+    card_sprite:    "--card-sprite-url",
+    column_sprite:  "--column-sprite-url",
+    bg_overlay_sprite:     "--bg-overlay-url",
+    profile_sprite: "--profile-sprite-url",
+  }
+
+  Object.entries(spriteSlots).forEach(([key, cssVar]) => {
+    if (equipped[key]) {
+      root.style.setProperty(cssVar, `url(${SPRITES_BASE}/${equipped[key]})`)
+    } else {
+      root.style.setProperty(cssVar, "none")
+    }
+  })
 }
 
 export function saveEquipped(equipped) {

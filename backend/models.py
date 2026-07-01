@@ -15,6 +15,7 @@ class ItemType(enum.Enum):
     task_bg      = "task_bg"
     font         = "font"
     color_scheme = "color_scheme"
+    sprite_pack  = "sprite_pack"
 
 class User(Base):
     __tablename__ = "users"
@@ -50,6 +51,7 @@ class StoreItem(Base):
     name        = Column(String, nullable=False)
     description = Column(String, default="")
     item_type   = Column(Enum(ItemType), nullable=False)
+    meta        = Column(String, nullable=True)
     cost        = Column(Integer, default=0)
     css_value   = Column(String, nullable=False)
     preview     = Column(String, default="")

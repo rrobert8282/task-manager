@@ -6,10 +6,11 @@ from pydantic import BaseModel, EmailStr
 from typing import Optional
 from datetime import date
 import json
-from database import get_db, engine
+from database import get_db, engine, SessionLocal
 import models
 import auth
 import secrets
+import json
 
 
 models.Base.metadata.create_all(bind=engine)
@@ -442,3 +443,111 @@ def get_comments(
     return db.query(models.TaskComment).filter(
         models.TaskComment.task_id == task_id
     ).all()
+
+# ── Sprite pack seeder ─────────────────────────────────────────────────────────
+@app.on_event("startup")
+def seed_sprite_packs():
+    db = SessionLocal()
+    try:
+        exists = db.query(models.StoreItem).filter(
+            models.StoreItem.item_type == "sprite_pack"
+        ).first()
+        if exists:
+            return
+        packs = [
+            models.StoreItem(
+                name="Forest Friends",
+                description="Woodland creatures for your tasks",
+                cost=150,
+                item_type=models.ItemType.sprite_pack,
+                css_value="",
+                meta=json.dumps({
+                    "preview": "forest/profile.gif",
+                    "sprites": {
+                        "card":       "forest/card.gif",
+                        "column":     "forest/column.gif",
+                        "bg_overlay": "forest/overlay.gif",
+                        "profile":    "forest/profile.gif",
+                    }
+                })
+            ),
+            models.StoreItem(
+                name="Space Explorer",
+                description="Cosmic vibes across your workspace",
+                cost=200,
+                item_type=models.ItemType.sprite_pack,
+                css_value="",
+                meta=json.dumps({
+                    "preview": "space/profile.gif",
+                    "sprites": {
+                        "card":       "space/card.gif",
+                        "column":     "space/column.gif",
+                        "bg_overlay": "space/overlay.gif",
+                        "profile":    "space/profile.gif",
+                    }
+                })
+            ),
+            models.StoreItem(
+                name="Ocean Depths",
+                description="Deep sea creatures for deep focus",
+                cost=175,
+                item_type=models.ItemType.sprite_pack,
+                css_value="",
+                meta=json.dumps({
+                    "preview": "ocean/profile.gif",
+                    "sprites": {
+                        "card":       "ocean/card.gif",
+                        "column":     "ocean/column.gif",
+                        "bg_overlay": "ocean/overlay.gif",
+                        "profile":    "ocean/profile.gif",
+                    }
+                })
+            ),
+        ]
+        db.add_all(packs)
+        db.commit()
+    finally:
+        db.close()
+
+
+# ── Sprite equip route ─────────────────────────────────────────────────────────
+class EquipSpriteSchema(BaseModel):
+    pack_id: int
+    slot: str   # card | column | bg_overlay | profile
+
+VALID_SLOTS = {"card", "column", "bg_overlay", "profile"}
+
+@app.post("/store/equip-sprite")
+def equip_sprite(
+    body: EquipSpriteSchema,
+    current_user=Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    if body.slot not in VALID_SLOTS:
+        raise HTTPException(400, f"Invalid slot. Must be one of: {VALID_SLOTS}")
+
+    # Check user owns this pack
+    purchase = db.query(models.Purchase).filter(
+        models.Purchase.user_id == current_user.id,
+        models.Purchase.item_id == body.pack_id
+    ).first()
+    if not purchase:
+        raise HTTPException(403, "You don't own this sprite pack")
+
+    item = db.query(models.StoreItem).filter(models.StoreItem.id == body.pack_id).first()
+    if not item or item.item_type != "sprite_pack":
+        raise HTTPException(404, "Sprite pack not found")
+
+    meta = json.loads(item.meta)
+    sprite_path = meta["sprites"].get(body.slot)
+    if not sprite_path:
+        raise HTTPException(400, "This pack has no sprite for that slot")
+
+    # Update equipped state
+    state = get_state(current_user.id, db)
+    equipped = json.loads(state.equipped_json) if state.equipped_json else {}
+    equipped[f"{body.slot}_sprite"] = sprite_path
+    state.equipped_json = json.dumps(equipped)
+    db.commit()
+
+    return {"equipped": equipped}
