@@ -9,6 +9,8 @@ import json
 from database import get_db, engine
 import models
 import auth
+import secrets
+
 
 models.Base.metadata.create_all(bind=engine)
 
@@ -269,3 +271,174 @@ def equip_item(
     state.equipped_json = json.dumps(equipped)
     db.commit()
     return {"message": "equipped", "equipped": equipped}
+
+def get_buddy(user_id: int, db: Session):
+    """Return the User object of user_id's buddy, or None."""
+    link = db.query(models.BuddyLink).filter(
+        (models.BuddyLink.user_a_id == user_id) |
+        (models.BuddyLink.user_b_id == user_id)
+    ).first()
+    if not link:
+        return None
+    buddy_id = link.user_b_id if link.user_a_id == user_id else link.user_a_id
+    return db.query(models.User).filter(models.User.id == buddy_id).first()
+
+
+# ── Buddy routes ───────────────────────────────────────────────────────────────
+
+@app.post("/buddy/invite")
+def create_invite(
+    current_user=Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    if get_buddy(current_user.id, db):
+        raise HTTPException(400, "You already have a buddy")
+    # Invalidate any previous unused invite from this user
+    db.query(models.BuddyInvite).filter(
+        models.BuddyInvite.sender_id == current_user.id,
+        models.BuddyInvite.used == False
+    ).delete()
+    invite = models.BuddyInvite(
+        code=secrets.token_urlsafe(8),
+        sender_id=current_user.id
+    )
+    db.add(invite)
+    db.commit()
+    db.refresh(invite)
+    return {"code": invite.code}
+
+
+class AcceptSchema(BaseModel):
+    code: str
+
+@app.post("/buddy/accept")
+def accept_invite(
+    body: AcceptSchema,
+    current_user=Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    if get_buddy(current_user.id, db):
+        raise HTTPException(400, "You already have a buddy")
+    invite = db.query(models.BuddyInvite).filter(
+        models.BuddyInvite.code == body.code,
+        models.BuddyInvite.used == False
+    ).first()
+    if not invite:
+        raise HTTPException(404, "Invalid or expired invite code")
+    if invite.sender_id == current_user.id:
+        raise HTTPException(400, "You cannot accept your own invite")
+    if get_buddy(invite.sender_id, db):
+        raise HTTPException(400, "That user already has a buddy")
+
+    link = models.BuddyLink(user_a_id=invite.sender_id, user_b_id=current_user.id)
+    invite.used = True
+    db.add(link)
+    db.commit()
+
+    sender = db.query(models.User).filter(models.User.id == invite.sender_id).first()
+    return {"message": "Buddy linked!", "buddy": sender.username}
+
+
+@app.get("/buddy")
+def get_my_buddy(
+    current_user=Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    buddy = get_buddy(current_user.id, db)
+    if not buddy:
+        return {"buddy": None}
+    return {"buddy": {"id": buddy.id, "username": buddy.username}}
+
+
+@app.delete("/buddy")
+def unlink_buddy(
+    current_user=Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    link = db.query(models.BuddyLink).filter(
+        (models.BuddyLink.user_a_id == current_user.id) |
+        (models.BuddyLink.user_b_id == current_user.id)
+    ).first()
+    if not link:
+        raise HTTPException(404, "No buddy to unlink")
+    db.delete(link)
+    db.commit()
+    return {"message": "Buddy unlinked"}
+
+
+@app.get("/buddy/tasks")
+def get_buddy_tasks(
+    current_user=Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    buddy = get_buddy(current_user.id, db)
+    if not buddy:
+        raise HTTPException(404, "No buddy linked")
+    tasks = db.query(models.Task).filter(
+        models.Task.user_id == buddy.id,
+        models.Task.is_private == False,
+        models.Task.is_shared == False
+    ).all() 
+    return tasks
+
+@app.get("/buddy/shared")
+def get_buddy_shared_tasks(
+    current_user=Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    buddy = get_buddy(current_user.id, db)
+    if not buddy:
+        return []
+    return db.query(models.Task).filter(
+        models.Task.user_id == buddy.id,
+        models.Task.is_shared == True
+    ).all()
+# ── Comment routes ─────────────────────────────────────────────────────────────
+
+class CommentSchema(BaseModel):
+    emoji: str | None = None
+    text:  str | None = None
+
+@app.post("/tasks/{task_id}/comments")
+def add_comment(
+    task_id: int,
+    body: CommentSchema,
+    current_user=Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    task = db.query(models.Task).filter(models.Task.id == task_id).first()
+    if not task:
+        raise HTTPException(404, "Task not found")
+    buddy = get_buddy(current_user.id, db)
+    # Can only comment on your buddy's public tasks
+    if not buddy or task.user_id != buddy.id or task.is_private:
+        raise HTTPException(403, "Cannot comment on this task")
+    comment = models.TaskComment(
+        task_id=task_id,
+        author_id=current_user.id,
+        emoji=body.emoji,
+        text=body.text
+    )
+    db.add(comment)
+    db.commit()
+    db.refresh(comment)
+    return comment
+
+
+@app.get("/tasks/{task_id}/comments")
+def get_comments(
+    task_id: int,
+    current_user=Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    task = db.query(models.Task).filter(models.Task.id == task_id).first()
+    if not task:
+        raise HTTPException(404, "Task not found")
+    buddy = get_buddy(current_user.id, db)
+    buddy_id = buddy.id if buddy else None
+    # Must be your own task or your buddy's public task
+    if task.user_id != current_user.id and (not buddy or task.user_id != buddy_id or task.is_private):
+        raise HTTPException(403, "Cannot view comments on this task")
+    return db.query(models.TaskComment).filter(
+        models.TaskComment.task_id == task_id
+    ).all()

@@ -1,7 +1,8 @@
-from sqlalchemy import Column, Integer, String, Boolean, Date, Enum, ForeignKey
+from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime, Enum, Date
 from sqlalchemy.orm import relationship
 from database import Base
 import enum
+from datetime import datetime
 
 class TaskType(enum.Enum):
     daily  = "daily"
@@ -24,6 +25,8 @@ class User(Base):
     tasks           = relationship("Task", back_populates="owner")
     purchases       = relationship("Purchase", back_populates="owner")
     app_state       = relationship("AppState", back_populates="owner", uselist=False)
+    sent_invites = relationship("BuddyInvite", back_populates="sender")
+    comments     = relationship("TaskComment", back_populates="author")
 
 class Task(Base):
     __tablename__ = "tasks"
@@ -39,6 +42,7 @@ class Task(Base):
     last_completed = Column(Date, nullable=True)
     user_id        = Column(Integer, ForeignKey("users.id"), nullable=False)
     owner          = relationship("User", back_populates="tasks")
+    comments = relationship("TaskComment", back_populates="task")
 
 class StoreItem(Base):
     __tablename__ = "store_items"
@@ -66,3 +70,42 @@ class AppState(Base):
     equipped_json = Column(String, default="{}")
     user_id       = Column(Integer, ForeignKey("users.id"), nullable=False, unique=True)
     owner         = relationship("User", back_populates="app_state")
+
+# models.py — add these imports at the top if not already there
+from datetime import datetime
+
+# ── New models ─────────────────────────────────────────────────────────────────
+
+class BuddyInvite(Base):
+    __tablename__ = "buddy_invite"
+
+    id         = Column(Integer, primary_key=True)
+    code       = Column(String, unique=True, nullable=False)
+    sender_id  = Column(Integer, ForeignKey("users.id"), nullable=False)
+    used       = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    sender = relationship("User", back_populates="sent_invites")
+
+
+class BuddyLink(Base):
+    __tablename__ = "buddy_link"
+
+    id         = Column(Integer, primary_key=True)
+    user_a_id  = Column(Integer, ForeignKey("users.id"), nullable=False)
+    user_b_id  = Column(Integer, ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class TaskComment(Base):
+    __tablename__ = "task_comment"
+
+    id         = Column(Integer, primary_key=True)
+    task_id    = Column(Integer, ForeignKey("tasks.id"), nullable=False)
+    author_id  = Column(Integer, ForeignKey("users.id"), nullable=False)
+    emoji      = Column(String, nullable=True)   # e.g. "👍"
+    text       = Column(String, nullable=True)   # short comment, 200 char max
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    task   = relationship("Task",   back_populates="comments")
+    author = relationship("User",   back_populates="comments")

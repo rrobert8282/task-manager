@@ -1,14 +1,14 @@
 import { useState, useEffect } from "react"
 import axios from "axios"
-import { loadFonts, applyTheme, loadEquipped } from "./theme"
+import { loadFonts, applyTheme } from "./theme"
 import Store from "./Store"
 import "./theme.css"
-
+import Buddy from "./Buddy"
+import TaskComments from "./TaskComments"
 import Auth from "./Auth"
 
 const API = "http://127.0.0.1:8000"
 
-// Axios interceptor — attaches token to every request automatically
 axios.interceptors.request.use(config => {
   const token = localStorage.getItem("token")
   if (token) config.headers.Authorization = `Bearer ${token}`
@@ -85,6 +85,7 @@ function TaskCard({ task, onToggle, onDelete, readOnly = false }) {
           </div>
         )}
       </div>
+      <TaskComments taskId={task.id} canComment={readOnly} />
     </div>
   )
 }
@@ -167,13 +168,15 @@ function Column({ col, tasks, onAdd, onToggle, onDelete, readOnly = false }) {
 }
 
 export default function App() {
-  const [user, setUser]       = useState(() => {
+  const [user, setUser]                         = useState(() => {
     const u = localStorage.getItem("user")
     return u ? JSON.parse(u) : null
   })
-  const [tasks, setTasks]     = useState([])
-  const [showStore, setStore] = useState(false)
-  const [coins, setCoins]     = useState(0)
+  const [tasks, setTasks]                       = useState([])
+  const [showStore, setStore]                   = useState(false)
+  const [coins, setCoins]                       = useState(0)
+  const [buddyTasks, setBuddyTasks]             = useState([])
+  const [buddySharedTasks, setBuddySharedTasks] = useState([])
 
   function handleLogin(data) {
     localStorage.setItem("token", data.access_token)
@@ -193,6 +196,8 @@ export default function App() {
     if (!user) return
     loadFonts()
     fetchTasks()
+    fetchBuddyTasks()
+    fetchBuddySharedTasks()
     axios.get(`${API}/state`).then(res => {
       setCoins(res.data.coins)
       axios.get(`${API}/store/items`).then(itemsRes => {
@@ -209,6 +214,24 @@ export default function App() {
   async function fetchTasks() {
     const res = await axios.get(`${API}/tasks`)
     setTasks(res.data)
+  }
+
+  async function fetchBuddyTasks() {
+    try {
+      const res = await axios.get(`${API}/buddy/tasks`)
+      setBuddyTasks(res.data)
+    } catch (e) {
+      setBuddyTasks([])
+    }
+  }
+
+  async function fetchBuddySharedTasks() {
+    try {
+      const res = await axios.get(`${API}/buddy/shared`)
+      setBuddySharedTasks(res.data)
+    } catch (e) {
+      setBuddySharedTasks([])
+    }
   }
 
   async function addTask(data) {
@@ -229,7 +252,6 @@ export default function App() {
 
   const byType = (type, shared) => tasks.filter(t => t.task_type === type && t.is_shared === shared)
 
-  // Show login page if not authenticated
   if (!user) return <Auth onLogin={handleLogin} />
 
   return (
@@ -273,11 +295,14 @@ export default function App() {
         </div>
 
         {/* Buddy Tasks */}
-        <SectionLabel icon="👥" label="Buddy's Tasks" sublabel="read only — buddy not connected yet" />
+        <SectionLabel icon="👥" label="Buddy's Tasks" sublabel="read only" />
+        <Buddy />
         <div style={{ display: "flex", gap: 16, alignItems: "flex-start", marginBottom: 40 }}>
           {COLUMNS.map(col => (
-            <Column key={`buddy-${col.type}`} col={col}
-              tasks={[]}
+            <Column
+              key={`buddy-${col.type}`}
+              col={col}
+              tasks={buddyTasks.filter(t => t.task_type === col.type)}
               onToggle={() => {}}
               onDelete={() => {}}
               readOnly
@@ -289,8 +314,13 @@ export default function App() {
         <SectionLabel icon="🤝" label="Shared Tasks" sublabel="visible to both you and your buddy" />
         <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
           {COLUMNS.map(col => (
-            <Column key={`shared-${col.type}`} col={col}
-              tasks={byType(col.type, true)}
+            <Column
+              key={`shared-${col.type}`}
+              col={col}
+              tasks={[
+                ...byType(col.type, true),
+                ...buddySharedTasks.filter(t => t.task_type === col.type)
+              ]}
               onAdd={data => addTask({ ...data, is_shared: true })}
               onToggle={toggleDone}
               onDelete={deleteTask}
