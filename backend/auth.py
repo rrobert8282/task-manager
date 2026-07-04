@@ -13,7 +13,8 @@ from database import get_db
 import models
 
 # ── Config ────────────────────────────────────────────────────────────────────
-SECRET_KEY = "8743dd76addb0c1ff9260d5bbb963444f9ae285de10e5eca8a9a4404f21056d0"   # keep whatever you had
+import os
+SECRET_KEY = os.environ.get("SECRET_KEY", "8743dd76addb0c1ff9260d5bbb963444f9ae285de10e5eca8a9a4404f21056d0")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24     # 24 hours; adjust as needed
 

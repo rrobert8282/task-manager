@@ -8,7 +8,7 @@ import TaskComments from "./TaskComments"
 import Auth from "./Auth"
 import Profile from "./Profile"
 
-const API = "http://127.0.0.1:8000"
+const API = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000"
 
 const SPRITE_KEYS = new Set(["card_sprite", "column_sprite", "bg_overlay_sprite", "profile_sprite"])
 
@@ -271,7 +271,8 @@ export default function App() {
     })
 
     const token = localStorage.getItem("token")
-    const ws = new WebSocket(`ws://127.0.0.1:8000/ws?token=${token}`)
+    const wsBase = API.replace(/^http/, "ws")
+    const ws = new WebSocket(`${wsBase}/ws?token=${token}`)
     ws.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data)
