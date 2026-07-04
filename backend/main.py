@@ -11,6 +11,9 @@ import models
 import auth
 import secrets
 import json
+import jwt
+from fastapi import WebSocket, WebSocketDisconnect
+
 
 
 models.Base.metadata.create_all(bind=engine)
@@ -111,7 +114,7 @@ def get_tasks(
     return query.all()
 
 @app.post("/tasks", status_code=201)
-def create_task(
+async def create_task(
     task: TaskCreate,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(auth.get_current_user)
@@ -120,61 +123,63 @@ def create_task(
     db.add(new_task)
     db.commit()
     db.refresh(new_task)
+    await notify_task_change(current_user.id, db)
     return new_task
 
 @app.patch("/tasks/{task_id}")
-def update_task(
+async def update_task(
     task_id: int,
     task: TaskUpdate,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(auth.get_current_user)
 ):
-    db_task = db.query(models.Task).filter(
-        models.Task.id == task_id,
-        models.Task.user_id == current_user.id
-    ).first()
+    db_task = db.query(models.Task).filter(models.Task.id == task_id).first()
     if not db_task:
         raise HTTPException(status_code=404, detail="Task not found")
+    if not user_can_modify_task(db_task, current_user, db):
+        raise HTTPException(status_code=403, detail="Not authorized to modify this task")
     for key, value in task.dict(exclude_unset=True).items():
         setattr(db_task, key, value)
     db.commit()
     db.refresh(db_task)
+    await notify_task_change(current_user.id, db)
     return db_task
 
 @app.patch("/tasks/{task_id}/complete")
-def complete_task(
+async def complete_task(
     task_id: int,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(auth.get_current_user)
 ):
-    db_task = db.query(models.Task).filter(
-        models.Task.id == task_id,
-        models.Task.user_id == current_user.id
-    ).first()
+    db_task = db.query(models.Task).filter(models.Task.id == task_id).first()
     if not db_task:
         raise HTTPException(status_code=404, detail="Task not found")
+    if not user_can_modify_task(db_task, current_user, db):
+        raise HTTPException(status_code=403, detail="Not authorized to modify this task")
     db_task.done = True
     db_task.last_completed = date.today()
     state = get_state(current_user.id, db)
     state.coins += 10
     db.commit()
     db.refresh(db_task)
+    await notify_task_change(current_user.id, db)
     return {"task": {"id": db_task.id, "done": db_task.done}, "coins_earned": 10, "total_coins": state.coins}
 
 @app.delete("/tasks/{task_id}", status_code=204)
-def delete_task(
+async def delete_task(
     task_id: int,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(auth.get_current_user)
 ):
-    db_task = db.query(models.Task).filter(
-        models.Task.id == task_id,
-        models.Task.user_id == current_user.id
-    ).first()
+    db_task = db.query(models.Task).filter(models.Task.id == task_id).first()
     if not db_task:
         raise HTTPException(status_code=404, detail="Task not found")
+    if not user_can_modify_task(db_task, current_user, db):
+        raise HTTPException(status_code=403, detail="Not authorized to modify this task")
+    owner_id = db_task.user_id
     db.delete(db_task)
     db.commit()
+    await notify_task_change(owner_id, db)
 
 # --- Store routes ---
 @app.get("/store/items")
@@ -184,11 +189,16 @@ def get_store_items(item_type: Optional[str] = None, db: Session = Depends(get_d
         query = query.filter(models.StoreItem.item_type == item_type)
     return query.all()
 
-@app.post("/store/seed", status_code=201)
-def seed_store(db: Session = Depends(get_db)):
-    if db.query(models.StoreItem).count() > 0:
-        return {"message": "already seeded"}
-    items = [
+@app.on_event("startup")
+def seed_store():
+    db = SessionLocal()
+    try:
+        exists = db.query(models.StoreItem).filter(
+            models.StoreItem.item_type == models.ItemType.color_scheme
+        ).first()
+        if exists:
+            return
+        items = [
         models.StoreItem(name="Default",  description="Classic clean look",   item_type=models.ItemType.color_scheme, cost=0,   css_value='{"--app-accent":"#3b82f6","--column-bg":"#ffffff","--task-bg":"#f9fafb","--text-primary":"#111827","--text-secondary":"#6b7280","--text-muted":"#9ca3af","--border":"#e5e7eb","--form-bg":"#f9fafb","--surface":"#ffffff","--app-bg":"#f3f4f6"}', preview="#3b82f6"),
         models.StoreItem(name="Forest",   description="Calm green tones",     item_type=models.ItemType.color_scheme, cost=0,   css_value='{"--app-accent":"#16a34a","--column-bg":"#dcfce7","--task-bg":"#f0fdf4","--text-primary":"#14532d","--text-secondary":"#166534","--text-muted":"#4ade80","--border":"#86efac","--form-bg":"#dcfce7","--surface":"#dcfce7","--app-bg":"#f0fdf4"}', preview="#16a34a"),
         models.StoreItem(name="Sunset",   description="Warm orange and pink", item_type=models.ItemType.color_scheme, cost=50,  css_value='{"--app-accent":"#f97316","--column-bg":"#ffedd5","--task-bg":"#fff7ed","--text-primary":"#7c2d12","--text-secondary":"#9a3412","--text-muted":"#fb923c","--border":"#fed7aa","--form-bg":"#ffedd5","--surface":"#ffedd5","--app-bg":"#fff7ed"}', preview="#f97316"),
@@ -206,11 +216,82 @@ def seed_store(db: Session = Depends(get_db)):
         models.StoreItem(name="Plain",     description="Default column style", item_type=models.ItemType.column_bg, cost=0, css_value="none", preview="#ffffff"),
         models.StoreItem(name="Plain row", description="Default task style",   item_type=models.ItemType.task_bg,   cost=0, css_value="none", preview="#ffffff"),
     ]
-    db.add_all(items)
-    db.commit()
+        db.add_all(items)
+        db.commit()
+    finally:
+        db.close()
     return {"message": "seeded", "count": len(items)}
 
 # --- State routes ---
+
+# --- WebSocket connection manager ---
+class ConnectionManager:
+    def __init__(self):
+        # user_id -> list of active WebSocket connections (a user could have multiple tabs open)
+        self.active: dict[int, list[WebSocket]] = {}
+
+    async def connect(self, user_id: int, websocket: WebSocket):
+        await websocket.accept()
+        self.active.setdefault(user_id, []).append(websocket)
+
+    def disconnect(self, user_id: int, websocket: WebSocket):
+        conns = self.active.get(user_id, [])
+        if websocket in conns:
+            conns.remove(websocket)
+        if not conns and user_id in self.active:
+            del self.active[user_id]
+
+    async def send_to_user(self, user_id: int, message: dict):
+        for ws in self.active.get(user_id, []):
+            try:
+                await ws.send_json(message)
+            except Exception:
+                pass  # connection likely dead, will be cleaned up on disconnect
+
+manager = ConnectionManager()
+
+
+async def notify_task_change(user_id: int, db: Session):
+    """Notify a user and their buddy (if connected) that task data changed."""
+    await manager.send_to_user(user_id, {"type": "tasks_changed"})
+    buddy = get_buddy(user_id, db)
+    if buddy:
+        await manager.send_to_user(buddy.id, {"type": "tasks_changed"})
+
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket, token: str = None):
+    if not token:
+        await websocket.close(code=1008)
+        return
+    try:
+        payload = jwt.decode(token, auth.SECRET_KEY, algorithms=[auth.ALGORITHM])
+        username = payload.get("sub")
+        if not username:
+            await websocket.close(code=1008)
+            return
+    except Exception:
+        await websocket.close(code=1008)
+        return
+
+    db = SessionLocal()
+    try:
+        user = db.query(models.User).filter(models.User.username == username).first()
+        if not user:
+            await websocket.close(code=1008)
+            return
+        user_id = user.id
+    finally:
+        db.close()
+
+    await manager.connect(user_id, websocket)
+    try:
+        while True:
+            # We don't expect messages from the client, just keep the connection open.
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(user_id, websocket)
+
 @app.get("/state")
 def get_app_state(
     db: Session = Depends(get_db),
@@ -218,6 +299,45 @@ def get_app_state(
 ):
     state = get_state(current_user.id, db)
     return {"coins": state.coins, "equipped": json.loads(state.equipped_json)}
+
+def _pack_pieces(db: Session, pack_key: str):
+    """All sprite_piece StoreItems belonging to a given pack key."""
+    pieces = db.query(models.StoreItem).filter(
+        models.StoreItem.item_type == models.ItemType.sprite_piece
+    ).all()
+    return [p for p in pieces if json.loads(p.meta).get("pack") == pack_key]
+
+
+def _owned_item_ids(db: Session, user_id: int, item_ids: list[int]) -> set[int]:
+    if not item_ids:
+        return set()
+    rows = db.query(models.Purchase).filter(
+        models.Purchase.user_id == user_id,
+        models.Purchase.item_id.in_(item_ids)
+    ).all()
+    return {r.item_id for r in rows}
+
+
+def _maybe_grant_pack(db: Session, user_id: int, pack_key: str):
+    """If the user now owns all pieces of a pack, grant the pack itself for free."""
+    pack_item = db.query(models.StoreItem).filter(
+        models.StoreItem.item_type == models.ItemType.sprite_pack
+    ).all()
+    pack_item = next((p for p in pack_item if json.loads(p.meta).get("pack") == pack_key), None)
+    if not pack_item:
+        return
+    already_pack = db.query(models.Purchase).filter(
+        models.Purchase.item_id == pack_item.id,
+        models.Purchase.user_id == user_id
+    ).first()
+    if already_pack:
+        return
+    pieces = _pack_pieces(db, pack_key)
+    owned = _owned_item_ids(db, user_id, [p.id for p in pieces])
+    if pieces and all(p.id in owned for p in pieces):
+        db.add(models.Purchase(item_id=pack_item.id, user_id=user_id))
+        db.commit()
+
 
 @app.post("/store/buy/{item_id}")
 def buy_item(
@@ -235,11 +355,34 @@ def buy_item(
     if already:
         return {"message": "already owned"}
     state = get_state(current_user.id, db)
+
+    if item.item_type == models.ItemType.sprite_pack:
+        meta = json.loads(item.meta)
+        pack_key = meta["pack"]
+        pieces = _pack_pieces(db, pack_key)
+        owned = _owned_item_ids(db, current_user.id, [p.id for p in pieces])
+        missing = [p for p in pieces if p.id not in owned]
+        raw_sum = sum(p.cost for p in missing)
+        effective_cost = round(raw_sum * SPRITE_PACK_DISCOUNT)
+        if effective_cost > 0 and state.coins < effective_cost:
+            raise HTTPException(status_code=400, detail="Not enough coins")
+        state.coins -= effective_cost
+        for p in missing:
+            db.add(models.Purchase(item_id=p.id, user_id=current_user.id))
+        db.add(models.Purchase(item_id=item_id, user_id=current_user.id))
+        db.commit()
+        return {"message": "purchased", "coins": state.coins, "price_paid": effective_cost}
+
     if item.cost > 0 and state.coins < item.cost:
         raise HTTPException(status_code=400, detail="Not enough coins")
     state.coins -= item.cost
     db.add(models.Purchase(item_id=item_id, user_id=current_user.id))
     db.commit()
+
+    if item.item_type == models.ItemType.sprite_piece:
+        pack_key = json.loads(item.meta)["pack"]
+        _maybe_grant_pack(db, current_user.id, pack_key)
+
     return {"message": "purchased", "coins": state.coins}
 
 @app.get("/store/inventory")
@@ -283,6 +426,17 @@ def get_buddy(user_id: int, db: Session):
         return None
     buddy_id = link.user_b_id if link.user_a_id == user_id else link.user_a_id
     return db.query(models.User).filter(models.User.id == buddy_id).first()
+
+
+def user_can_modify_task(task: models.Task, current_user: models.User, db: Session) -> bool:
+    """True if current_user owns the task, or the task belongs to their
+    buddy and is marked shared."""
+    if task.user_id == current_user.id:
+        return True
+    buddy = get_buddy(current_user.id, db)
+    if buddy and task.user_id == buddy.id and task.is_shared:
+        return True
+    return False
 
 
 # ── Buddy routes ───────────────────────────────────────────────────────────────
@@ -445,66 +599,78 @@ def get_comments(
     ).all()
 
 # ── Sprite pack seeder ─────────────────────────────────────────────────────────
+# Pack definitions: base data used to derive both piece prices and pack price.
+SPRITE_PACK_DEFS = {
+    "forest": {
+        "display_name": "Forest Friends",
+        "description": "Woodland creatures for your tasks",
+        "base_cost": 150,
+    },
+    "space": {
+        "display_name": "Space Explorer",
+        "description": "Cosmic vibes across your workspace",
+        "base_cost": 200,
+    },
+    "ocean": {
+        "display_name": "Ocean Depths",
+        "description": "Deep sea creatures for deep focus",
+        "base_cost": 175,
+    },
+}
+SPRITE_PACK_DISCOUNT = 0.8  # 20% off when buying remaining pieces as part of a pack
+
+
+def sprite_piece_price(base_cost: int) -> int:
+    return round(base_cost / 4)
+
+
 @app.on_event("startup")
 def seed_sprite_packs():
     db = SessionLocal()
     try:
         exists = db.query(models.StoreItem).filter(
-            models.StoreItem.item_type == "sprite_pack"
+            models.StoreItem.item_type == models.ItemType.sprite_pack
         ).first()
         if exists:
             return
-        packs = [
-            models.StoreItem(
-                name="Forest Friends",
-                description="Woodland creatures for your tasks",
-                cost=150,
+
+        rows = []
+        for pack_key, info in SPRITE_PACK_DEFS.items():
+            piece_price = sprite_piece_price(info["base_cost"])
+            sprites = {
+                "card":       f"{pack_key}/card.png",
+                "column":     f"{pack_key}/column.png",
+                "bg_overlay": f"{pack_key}/bg_overlay.png",
+                "profile":    f"{pack_key}/profile.png",
+            }
+
+            # Individual pieces
+            for slot, path in sprites.items():
+                rows.append(models.StoreItem(
+                    name=f"{info['display_name']} - {slot.replace('_', ' ').title()}",
+                    description=f"{slot.replace('_', ' ').title()} piece from {info['display_name']}",
+                    cost=piece_price,
+                    item_type=models.ItemType.sprite_piece,
+                    css_value="",
+                    meta=json.dumps({"pack": pack_key, "slot": slot, "path": path}),
+                ))
+
+            # Pack bundle row — baseline price shown when user owns none of its pieces
+            bundle_baseline = round(piece_price * 4 * SPRITE_PACK_DISCOUNT)
+            rows.append(models.StoreItem(
+                name=info["display_name"],
+                description=info["description"],
+                cost=bundle_baseline,
                 item_type=models.ItemType.sprite_pack,
                 css_value="",
                 meta=json.dumps({
-                    "preview": "forest/profile.gif",
-                    "sprites": {
-                        "card":       "forest/card.gif",
-                        "column":     "forest/column.gif",
-                        "bg_overlay": "forest/overlay.gif",
-                        "profile":    "forest/profile.gif",
-                    }
-                })
-            ),
-            models.StoreItem(
-                name="Space Explorer",
-                description="Cosmic vibes across your workspace",
-                cost=200,
-                item_type=models.ItemType.sprite_pack,
-                css_value="",
-                meta=json.dumps({
-                    "preview": "space/profile.gif",
-                    "sprites": {
-                        "card":       "space/card.gif",
-                        "column":     "space/column.gif",
-                        "bg_overlay": "space/overlay.gif",
-                        "profile":    "space/profile.gif",
-                    }
-                })
-            ),
-            models.StoreItem(
-                name="Ocean Depths",
-                description="Deep sea creatures for deep focus",
-                cost=175,
-                item_type=models.ItemType.sprite_pack,
-                css_value="",
-                meta=json.dumps({
-                    "preview": "ocean/profile.gif",
-                    "sprites": {
-                        "card":       "ocean/card.gif",
-                        "column":     "ocean/column.gif",
-                        "bg_overlay": "ocean/overlay.gif",
-                        "profile":    "ocean/profile.gif",
-                    }
-                })
-            ),
-        ]
-        db.add_all(packs)
+                    "pack": pack_key,
+                    "preview": sprites["profile"],
+                    "sprites": sprites,
+                }),
+            ))
+
+        db.add_all(rows)
         db.commit()
     finally:
         db.close()
@@ -512,8 +678,7 @@ def seed_sprite_packs():
 
 # ── Sprite equip route ─────────────────────────────────────────────────────────
 class EquipSpriteSchema(BaseModel):
-    pack_id: int
-    slot: str   # card | column | bg_overlay | profile
+    item_id: int   # id of an owned sprite_piece StoreItem
 
 VALID_SLOTS = {"card", "column", "bg_overlay", "profile"}
 
@@ -523,30 +688,27 @@ def equip_sprite(
     current_user=Depends(auth.get_current_user),
     db: Session = Depends(get_db)
 ):
-    if body.slot not in VALID_SLOTS:
-        raise HTTPException(400, f"Invalid slot. Must be one of: {VALID_SLOTS}")
+    item = db.query(models.StoreItem).filter(models.StoreItem.id == body.item_id).first()
+    if not item or item.item_type != models.ItemType.sprite_piece:
+        raise HTTPException(404, "Sprite piece not found")
 
-    # Check user owns this pack
     purchase = db.query(models.Purchase).filter(
         models.Purchase.user_id == current_user.id,
-        models.Purchase.item_id == body.pack_id
+        models.Purchase.item_id == body.item_id
     ).first()
     if not purchase:
-        raise HTTPException(403, "You don't own this sprite pack")
-
-    item = db.query(models.StoreItem).filter(models.StoreItem.id == body.pack_id).first()
-    if not item or item.item_type != "sprite_pack":
-        raise HTTPException(404, "Sprite pack not found")
+        raise HTTPException(403, "You don't own this sprite piece")
 
     meta = json.loads(item.meta)
-    sprite_path = meta["sprites"].get(body.slot)
-    if not sprite_path:
-        raise HTTPException(400, "This pack has no sprite for that slot")
+    slot = meta.get("slot")
+    sprite_path = meta.get("path")
+    if slot not in VALID_SLOTS or not sprite_path:
+        raise HTTPException(400, "This piece has invalid slot/path metadata")
 
     # Update equipped state
     state = get_state(current_user.id, db)
     equipped = json.loads(state.equipped_json) if state.equipped_json else {}
-    equipped[f"{body.slot}_sprite"] = sprite_path
+    equipped[f"{slot}_sprite"] = sprite_path
     state.equipped_json = json.dumps(equipped)
     db.commit()
 

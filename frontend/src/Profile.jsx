@@ -5,11 +5,11 @@ import { spriteUrl } from "./theme"
 const API = "http://127.0.0.1:8000"
 
 export default function Profile({ user, coins }) {
-  const [profileSprite, setProfileSprite] = useState(null)
-  const [ownedPacks, setOwnedPacks]       = useState([])
-  const [buddy, setBuddy]                 = useState(null)
-  const [picking, setPicking]             = useState(false)
-  const [stats, setStats]                 = useState({ total: 0, completed: 0 })
+  const [profileSprite, setProfileSprite]     = useState(null)
+  const [ownedProfilePieces, setOwnedPieces]  = useState([])
+  const [buddy, setBuddy]                     = useState(null)
+  const [picking, setPicking]                 = useState(false)
+  const [stats, setStats]                     = useState({ total: 0, completed: 0 })
 
   useEffect(() => { fetchData() }, [])
 
@@ -25,13 +25,14 @@ export default function Profile({ user, coins }) {
       const eq = stateRes.data.equipped
       if (eq.profile_sprite) setProfileSprite(spriteUrl(eq.profile_sprite))
 
-      const packs = invRes.data
-        .filter(i => i.item_type === "sprite_pack")
+      const pieces = invRes.data
+        .filter(i => i.item_type === "sprite_piece")
         .map(i => {
           try { return { ...i, parsedMeta: JSON.parse(i.meta) } }
           catch { return { ...i, parsedMeta: null } }
         })
-      setOwnedPacks(packs)
+        .filter(i => i.parsedMeta?.slot === "profile")
+      setOwnedPieces(pieces)
 
       const tasks = tasksRes.data
       setStats({ total: tasks.length, completed: tasks.filter(t => t.done).length })
@@ -42,11 +43,10 @@ export default function Profile({ user, coins }) {
     }
   }
 
-  async function equipProfileSprite(packId) {
+  async function equipProfileSprite(pieceId) {
     try {
       const res = await axios.post(`${API}/store/equip-sprite`, {
-        pack_id: packId,
-        slot: "profile",
+        item_id: pieceId,
       })
       setProfileSprite(spriteUrl(res.data.equipped.profile_sprite))
       setPicking(false)
@@ -101,8 +101,8 @@ export default function Profile({ user, coins }) {
         <p style={{ margin: "2px 0 0", fontSize: 12, color: "var(--text-secondary)" }}>
           {user.email}
         </p>
-        <div style={{ display: "flex", gap: 16, marginTop: 8, flexWrap: "wrap" }}>
-          <span style={{ fontSize: 12, color: "var(--text-muted)" }}>🪙 {coins} coins</span>
+        <div style={{ display: "flex", gap: 16, marginTop: 8, flexWrap: "wrap"}}>
+          <span style={{ fontSize: 12, color: "var(--text-muted)" }}>🪙 {coins}coins</span>
           <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
             ✅ {stats.completed} / {stats.total} tasks done
           </span>
@@ -128,16 +128,16 @@ export default function Profile({ user, coins }) {
           gap: 10,
           boxShadow: "0 4px 16px rgba(0,0,0,0.25)",
         }}>
-          {ownedPacks.length === 0
+          {ownedProfilePieces.length === 0
             ? (
-              <p style={{ margin: 0, fontSize: 12, color: "var(--text-muted)", whiteSpace: "nowrap" }}>
-                No sprite packs owned yet — buy one in the Store!
+              <p style={{ margin: 0, fontSize: 12, color: "var(--text-muted)",whiteSpace: "nowrap" }}>
+                No profile sprites owned yet — buy one in the Store!
               </p>
             )
-            : ownedPacks.map(pack => (
+            : ownedProfilePieces.map(piece => (
               <div
-                key={pack.id}
-                onClick={() => equipProfileSprite(pack.id)}
+                key={piece.id}
+                onClick={() => equipProfileSprite(piece.id)}
                 style={{
                   cursor: "pointer",
                   textAlign: "center",
@@ -148,10 +148,10 @@ export default function Profile({ user, coins }) {
                   minWidth: 72,
                 }}
               >
-                {pack.parsedMeta?.preview
+                {piece.parsedMeta?.path
                   ? <img
-                      src={spriteUrl(pack.parsedMeta.preview)}
-                      alt={pack.name}
+                      src={spriteUrl(piece.parsedMeta.path)}
+                      alt={piece.name}
                       style={{
                         width: 48, height: 48,
                         objectFit: "cover",
@@ -168,7 +168,7 @@ export default function Profile({ user, coins }) {
                     }} />
                 }
                 <p style={{ margin: "4px 0 0", fontSize: 11, color: "var(--text-secondary)" }}>
-                  {pack.name}
+                  {piece.name}
                 </p>
               </div>
             ))

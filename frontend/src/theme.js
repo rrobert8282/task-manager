@@ -64,7 +64,7 @@ export function applyTheme(equipped) {
     root.style.setProperty("--task-bg-image", equipped.task_bg.css_value)
   }
 
-  // ── Sprite slots ───────────────────────────────────────────────────────────
+// ── Sprite slots ───────────────────────────────────────────────────────────
   // Sprite values are stored as path strings (e.g. "forest/card.gif"),
   // not item IDs. Each slot gets its own CSS variable.
   const spriteSlots = {
@@ -73,7 +73,6 @@ export function applyTheme(equipped) {
     bg_overlay_sprite:     "--bg-overlay-url",
     profile_sprite: "--profile-sprite-url",
   }
-
   Object.entries(spriteSlots).forEach(([key, cssVar]) => {
     if (equipped[key]) {
       root.style.setProperty(cssVar, `url(${SPRITES_BASE}/${equipped[key]})`)
@@ -81,7 +80,22 @@ export function applyTheme(equipped) {
       root.style.setProperty(cssVar, "none")
     }
   })
+
+  // Sprites take visual precedence over the matching color-scheme background —
+  // when a sprite is equipped in a slot, blank out its background counterpart
+  // so the two don't render layered/overlapping.
+  const spriteOverridesBg = {
+    card_sprite:       "--task-bg-image",
+    column_sprite:     "--column-bg-image",
+    bg_overlay_sprite: "--app-bg-image",
+  }
+  Object.entries(spriteOverridesBg).forEach(([spriteKey, bgVar]) => {
+    if (equipped[spriteKey]) {
+      root.style.setProperty(bgVar, "none")
+    }
+  })
 }
+
 
 export function saveEquipped(equipped) {
   localStorage.setItem("equipped", JSON.stringify(equipped))

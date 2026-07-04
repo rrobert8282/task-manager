@@ -95,9 +95,11 @@ function TaskCard({ task, onToggle, onDelete, readOnly = false, cardSprite = nul
         </div>
         {!readOnly && (
           <div style={{ display: "flex", gap: 4, marginLeft: 8 }}>
+          {!task.done && (
             <button onClick={() => onToggle(task)} style={{ fontSize: 12, padding: "2px 8px" }}>
-              {task.done ? "Undo" : "Done"}
+              Done
             </button>
+          )}
             <button onClick={() => onDelete(task.id)} style={{ fontSize: 12, padding: "2px 8px", color: "#ef4444" }}>
               ✕
             </button>
@@ -267,6 +269,28 @@ export default function App() {
         applyTheme(equippedItems)
       })
     })
+
+    const token = localStorage.getItem("token")
+    const ws = new WebSocket(`ws://127.0.0.1:8000/ws?token=${token}`)
+    ws.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data)
+        if (msg.type === "tasks_changed") {
+          fetchTasks()
+          fetchBuddyTasks()
+          fetchBuddySharedTasks()
+        }
+      } catch (e) {
+        // ignore malformed messages
+      }
+    }
+    ws.onerror = (e) => {
+      console.error("WebSocket error", e)
+    }
+
+    return () => {
+      ws.close()
+    }
   }, [user])
 
   async function fetchTasks() {
@@ -295,19 +319,22 @@ export default function App() {
   async function addTask(data) {
     await axios.post(`${API}/tasks`, data)
     fetchTasks()
+    fetchBuddyTasks()
+    fetchBuddySharedTasks()
   }
-
   async function toggleDone(task) {
     const res = await axios.patch(`${API}/tasks/${task.id}/complete`)
     if (!task.done) setCoins(res.data.total_coins)
     fetchTasks()
+    fetchBuddyTasks()
+    fetchBuddySharedTasks()
   }
-
   async function deleteTask(id) {
     await axios.delete(`${API}/tasks/${id}`)
     fetchTasks()
+    fetchBuddyTasks()
+    fetchBuddySharedTasks()
   }
-
   const byType       = (type, shared) => tasks.filter(t => t.task_type === type && t.is_shared === shared)
   const cardSprite   = equippedSprites.card_sprite        ? spriteUrl(equippedSprites.card_sprite)        : null
   const columnSprite = equippedSprites.column_sprite      ? spriteUrl(equippedSprites.column_sprite)      : null

@@ -16,6 +16,7 @@ class ItemType(enum.Enum):
     font         = "font"
     color_scheme = "color_scheme"
     sprite_pack  = "sprite_pack"
+    sprite_piece = "sprite_piece"
 
 class User(Base):
     __tablename__ = "users"
@@ -43,7 +44,7 @@ class Task(Base):
     last_completed = Column(Date, nullable=True)
     user_id        = Column(Integer, ForeignKey("users.id"), nullable=False)
     owner          = relationship("User", back_populates="tasks")
-    comments = relationship("TaskComment", back_populates="task")
+    comments = relationship("TaskComment", back_populates="task", cascade="all, delete-orphan")
 
 class StoreItem(Base):
     __tablename__ = "store_items"
