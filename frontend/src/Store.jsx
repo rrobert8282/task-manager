@@ -149,7 +149,7 @@ export default function Store({ coins, onClose, onCoinsUpdate }) {
         border: "1px solid var(--border)",
         borderRadius: 12,
         padding: 24,
-        width: 620,
+        width: "min(620px, 92vw)",
         maxHeight: "82vh",
         overflow: "hidden",
         display: "flex",

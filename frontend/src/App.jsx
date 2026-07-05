@@ -24,6 +24,30 @@ const COLUMNS = [
   { type: "date",   label: "Dates",  icon: "📆" },
 ]
 
+const MOBILE_BREAKPOINT = 640
+
+function ColumnTabs({ activeColumnType, setActiveColumnType }) {
+  return (
+    <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+      {COLUMNS.map(col => (
+        <button
+          key={col.type}
+          onClick={() => setActiveColumnType(col.type)}
+          style={{
+            flex: 1, padding: "8px 4px", fontSize: 13, borderRadius: 8,
+            border: "1px solid var(--border)",
+            background: activeColumnType === col.type ? "var(--app-accent)" : "var(--surface)",
+            color: activeColumnType === col.type ? "white" : "var(--text-primary)",
+            cursor: "pointer",
+          }}
+        >
+          {col.icon} {col.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 function SectionLabel({ icon, label, sublabel }) {
   return (
     <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 12 }}>
@@ -221,6 +245,18 @@ export default function App() {
   const [coins, setCoins]                       = useState(0)
   const [buddyTasks, setBuddyTasks]             = useState([])
   const [buddySharedTasks, setBuddySharedTasks] = useState([])
+  const [isMobile, setIsMobile] = useState(
+    typeof window !== "undefined" ? window.innerWidth <= MOBILE_BREAKPOINT : false
+  )
+  const [activeColumnType, setActiveColumnType] = useState("daily")
+
+  useEffect(() => {
+    function handleResize() {
+      setIsMobile(window.innerWidth <= MOBILE_BREAKPOINT)
+    }
+    window.addEventListener("resize", handleResize)
+    return () => window.removeEventListener("resize", handleResize)
+  }, [])
   const [equippedSprites, setEquippedSprites]   = useState({})
 
   function handleLogin(data) {
@@ -390,8 +426,9 @@ export default function App() {
 
         {/* My Tasks */}
         <SectionLabel icon="👤" label="My Tasks" />
+        {isMobile && <ColumnTabs activeColumnType={activeColumnType} setActiveColumnType={setActiveColumnType} />}
         <div style={{ display: "flex", gap: 16, alignItems: "flex-start", marginBottom: 40 }}>
-          {COLUMNS.map(col => (
+          {(isMobile ? COLUMNS.filter(c => c.type === activeColumnType) : COLUMNS).map(col => (
             <Column key={col.type} col={col}
               tasks={byType(col.type, false)}
               onAdd={data => addTask({ ...data, is_shared: false })}
@@ -407,7 +444,7 @@ export default function App() {
         <SectionLabel icon="👥" label="Buddy's Tasks" sublabel="read only" />
         <Buddy />
         <div style={{ display: "flex", gap: 16, alignItems: "flex-start", marginBottom: 40 }}>
-          {COLUMNS.map(col => (
+          {(isMobile ? COLUMNS.filter(c => c.type === activeColumnType) : COLUMNS).map(col => (
             <Column
               key={`buddy-${col.type}`}
               col={col}
@@ -424,7 +461,7 @@ export default function App() {
         {/* Shared Tasks */}
         <SectionLabel icon="🤝" label="Shared Tasks" sublabel="visible to both you and your buddy" />
         <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
-          {COLUMNS.map(col => (
+          {(isMobile ? COLUMNS.filter(c => c.type === activeColumnType) : COLUMNS).map(col => (
             <Column
               key={`shared-${col.type}`}
               col={col}
