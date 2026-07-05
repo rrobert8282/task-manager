@@ -149,6 +149,7 @@ Frontend (set in Vercel dashboard):
 - **v1.0** — Initial full feature set: tasks, coins/store, JWT auth, buddy system, sprite packs
 - **v1.1** — Real-time WebSocket sync for buddy actions, dark mode, buddy task permission fixes, various bug fixes
 - **v1.2** — Deployed live (Render + Neon + Vercel), mix-and-match sprite piece purchasing with dynamic pack discounts
+- **v1.3** — Improved mobile UX: tab-switching daily/weekly/date columns on narrow screens, responsive Store modal sizing, verified end-to-end on real mobile devices
 
 ---
 
