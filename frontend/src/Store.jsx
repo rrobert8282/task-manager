@@ -329,10 +329,27 @@ export default function Store({ coins, onClose, onCoinsUpdate }) {
                                 }}>
                                   <img
                                     src={spriteUrl(piece.parsedMeta.path)}
-                                    alt={label}
+                                    alt={piece.description || label}
+                                    title={piece.description}
                                     style={{ width: "100%", height: "100%", objectFit: "cover" }}
                                   />
                                 </div>
+
+                                <p
+                                  title={piece.description}
+                                  style={{
+                                    margin: 0,
+                                    maxWidth: 90,
+                                    minHeight: 24,
+                                    fontSize: 10,
+                                    lineHeight: 1.2,
+                                    textAlign: "center",
+                                    color: "var(--text-secondary)",
+                                  }}
+                                >
+                                  {piece.description || label}
+                                </p>
+
                                 {owned ? (
                                   <button
                                     onClick={() => equipSprite(piece)}
