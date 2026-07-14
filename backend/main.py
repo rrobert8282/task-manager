@@ -13,6 +13,11 @@ import secrets
 import json
 import jwt
 from fastapi import WebSocket, WebSocketDisconnect
+from google.oauth2 import id_token as google_id_token
+from google.auth.transport import requests as google_requests
+import os
+
+GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
 
 
 
@@ -49,6 +54,9 @@ class TokenSchema(BaseModel):
     username:     str
     email:        str
 
+class GoogleAuthSchema(BaseModel):
+    credential: str  # the ID token from Google Identity Services
+
 # --- Auth routes ---
 @app.post("/auth/register", response_model=TokenSchema)
 def register(data: RegisterSchema, db: Session = Depends(get_db)):
@@ -72,6 +80,51 @@ def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get
     user = db.query(models.User).filter(models.User.email == form.username).first()
     if not user or not auth.verify_password(form.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid email or password")
+    token = auth.create_access_token({"sub": user.username})
+    return {"access_token": token, "token_type": "bearer", "username": user.username, "email": user.email}
+@app.post("/auth/google", response_model=TokenSchema)
+def google_auth(data: GoogleAuthSchema, db: Session = Depends(get_db)):
+    if not GOOGLE_CLIENT_ID:
+        raise HTTPException(status_code=500, detail="Google OAuth is not configured on this server")
+    try:
+        idinfo = google_id_token.verify_oauth2_token(
+            data.credential, google_requests.Request(), GOOGLE_CLIENT_ID
+        )
+    except ValueError:
+        raise HTTPException(status_code=401, detail="Invalid Google credential")
+
+    google_sub = idinfo["sub"]
+    email = idinfo.get("email")
+    email_verified = idinfo.get("email_verified", False)
+    name = idinfo.get("name") or (email.split("@")[0] if email else "user")
+
+    # 1. Already linked to this exact Google account
+    user = db.query(models.User).filter(models.User.google_sub == google_sub).first()
+
+    if not user and email and email_verified:
+        # 2. Auto-link to an existing account with a matching VERIFIED email
+        existing = db.query(models.User).filter(models.User.email == email).first()
+        if existing:
+            existing.google_sub = google_sub
+            db.commit()
+            db.refresh(existing)
+            user = existing
+
+    if not user:
+        # 3. Brand new account, Google-only (no local password)
+        if not email:
+            raise HTTPException(status_code=400, detail="Google account has no email")
+        user = models.User(
+            email=email,
+            username=name,
+            hashed_password=None,
+            google_sub=google_sub,
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        get_state(user.id, db)
+
     token = auth.create_access_token({"sub": user.username})
     return {"access_token": token, "token_type": "bearer", "username": user.username, "email": user.email}
 

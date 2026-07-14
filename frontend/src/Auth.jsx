@@ -1,5 +1,7 @@
-import { useState } from "react"
+import { useState, useEffect, useRef } from "react"
 import axios from "axios"
+
+const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || ""
 
 const API = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000"
 
@@ -10,6 +12,32 @@ export default function Auth({ onLogin }) {
   const [username, setUsername] = useState("")
   const [error, setError]       = useState("")
   const [loading, setLoading]   = useState(false)
+  const googleButtonRef = useRef(null)
+
+  async function handleGoogleCredential(response) {
+    setError("")
+    setLoading(true)
+    try {
+      const res = await axios.post(`${API}/auth/google`, { credential: response.credential })
+      onLogin(res.data)
+    } catch (e) {
+      setError(e.response?.data?.detail || "Google sign-in failed")
+    }
+    setLoading(false)
+  }
+
+  useEffect(() => {
+    if (!GOOGLE_CLIENT_ID || !window.google || !googleButtonRef.current) return
+    window.google.accounts.id.initialize({
+      client_id: GOOGLE_CLIENT_ID,
+      callback: handleGoogleCredential,
+    })
+    window.google.accounts.id.renderButton(googleButtonRef.current, {
+      theme: "outline",
+      size: "large",
+      width: 296,
+    })
+  }, [])
 
   async function submit() {
     setError("")
@@ -107,6 +135,18 @@ export default function Auth({ onLogin }) {
         {/* Error */}
         {error && (
           <p style={{ margin: "0 0 12px", fontSize: 13, color: "#ef4444" }}>{error}</p>
+        )}
+
+        {/* Google sign-in */}
+        {GOOGLE_CLIENT_ID && (
+          <>
+            <div ref={googleButtonRef} style={{ marginBottom: 16, display: "flex", justifyContent: "center" }} />
+            <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "0 0 16px", fontSize: 12, color: "var(--text-muted, #9ca3af)" }}>
+              <div style={{ flex: 1, height: 1, background: "var(--border, #e5e7eb)" }} />
+              or
+              <div style={{ flex: 1, height: 1, background: "var(--border, #e5e7eb)" }} />
+            </div>
+          </>
         )}
 
         {/* Submit */}

@@ -22,8 +22,9 @@ class User(Base):
     __tablename__ = "users"
     id              = Column(Integer, primary_key=True, index=True)
     email           = Column(String, unique=True, index=True, nullable=False)
-    hashed_password = Column(String, nullable=False)
+    hashed_password = Column(String, nullable=True)
     username        = Column(String, nullable=False)
+    google_sub      = Column(String, unique=True, index=True, nullable=True)
     tasks           = relationship("Task", back_populates="owner")
     purchases       = relationship("Purchase", back_populates="owner")
     app_state       = relationship("AppState", back_populates="owner", uselist=False)
