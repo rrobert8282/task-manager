@@ -77,7 +77,7 @@ export DATABASE_URL="postgresql://user:pass@host/dbname?sslmode=require"
 uvicorn main:app --reload
 ```
 
-> **Note:** if you ever change a model in `models.py`, SQLAlchemy's `create_all()` will **not** alter existing tables. Delete `tasks.db` (or drop tables manually if using Postgres) and restart to apply schema changes.
+> **Note:** when `models.py` changes, create and apply an Alembic migration. Do not delete `tasks.db` or modify production tables manually.
 
 ### Frontend
 
@@ -110,12 +110,66 @@ This project is deployed using entirely free-tier services:
 Backend (set in Render dashboard):
 - `DATABASE_URL` — your Neon connection string
 - `SECRET_KEY` — a strong random secret (generate with `python3 -c "import secrets; print(secrets.token_hex(32))"`), never reuse a value that's ever been committed to git
+- `GOOGLE_CLIENT_ID` — your Google OAuth client ID (see Google OAuth Setup below)
 
 Frontend (set in Vercel dashboard):
 - `VITE_API_URL` — your deployed Render backend URL (e.g. `https://your-app.onrender.com`)
+- `VITE_GOOGLE_CLIENT_ID` — the **same** Google OAuth client ID as above. This must be prefixed with `VITE_` or Vite will silently strip it (and the entire Google button) out of the production build — it will not error, it will just be missing.
 
 ---
 
+## Google OAuth Setup
+
+1. In [Google Cloud Console](https://console.cloud.google.com), create a project and an OAuth client ID (Application type: **Web application**)
+2. Under **Authorized JavaScript origins**, add every domain the app runs on: `http://localhost:5173` for local dev, plus your production frontend URL (e.g. `https://your-app.vercel.app`)
+3. No redirect URIs needed — this uses Google Identity Services' token-based sign-in, not a redirect flow
+4. Copy the generated Client ID (not a secret — safe to embed in frontend code) and set it as both `GOOGLE_CLIENT_ID` (backend) and `VITE_GOOGLE_CLIENT_ID` (frontend), as described above
+
+Sign-in behavior:
+- New Google account → creates a new user with no local password (`hashed_password` is `NULL`)
+- Returning Google account → matched by `google_sub`, logs into the same account
+- Google account whose **verified** email matches an existing password-based account → automatically links them (adds `google_sub` to that existing user), so the same email can sign in either way going forward
+
+---
+
+## Database Migrations
+
+Schema changes are managed with [Alembic](https://alembic.sqlalchemy.org), not `create_all()`. To apply pending migrations:
+
+```bash
+cd backend
+alembic upgrade head
+```
+
+By default this targets your local SQLite database. To run migrations against production (Neon), set `DATABASE_URL` first:
+
+```bash
+export DATABASE_URL="your-neon-connection-string"
+alembic upgrade head
+```
+
+When adding a new model field, generate a migration rather than editing the database directly:
+
+```bash
+alembic revision --autogenerate -m "describe the change"
+```
+
+**Review the generated migration file before running it** — autogenerate is a starting point, not guaranteed correct, especially for SQLite (which has limited `ALTER TABLE` support and often needs Alembic's "batch mode" to work, as used in the `google_sub` migration for reference).
+
+---
+
+## Admin Tasks
+
+**Deleting a user** (e.g. test accounts, spam signups) safely across every table that references them (tasks, purchases, comments, buddy links, app state) in one transaction:
+
+```bash
+cd backend
+python delete.py <username>
+```
+
+In production, run this from Render's Shell (Dashboard → your service → Shell tab), from the `backend` directory.
+
+---
 ## Testing the Buddy / Real-Time Features
 
 1. Register two accounts (e.g. in two separate browser windows, or one normal + one incognito)
@@ -137,9 +191,11 @@ Frontend (set in Vercel dashboard):
 
 ## Known Limitations
 
-- No email verification or password reset flow (planned as a future enhancement, requires transactional email infrastructure)
+- No password reset flow for local (email/password) accounts. Google OAuth accounts sidestep this since Google handles their own account recovery, but a user who registered with a password and forgot it currently has no self-service recovery path.
+- No notification/email digest system — considered for this project but scoped out as disproportionate effort (transactional email service, scheduling infrastructure, timezone handling) relative to portfolio value.
 - WebSocket auth passes the JWT as a query parameter (`?token=...`) since browser WebSockets can't send custom headers — fine for a portfolio/local project, but for production you'd want a more robust scheme (short-lived ticket tokens, etc.)
 - Render's free tier spins down after inactivity, causing a cold-start delay on the first request after idle periods
+- Vite only exposes environment variables prefixed with `VITE_` to frontend code — an unprefixed variable is silently treated as undefined and any code gated behind it gets dead-code-eliminated from the production build with no error. Worth knowing if a feature "disappears" in production despite working locally.
 - Sprite pack art is sourced from [Kenney.nl](https://kenney.nl) (CC0 license, free for commercial use, no attribution required)
 
 ---
@@ -150,6 +206,7 @@ Frontend (set in Vercel dashboard):
 - **v1.1** — Real-time WebSocket sync for buddy actions, dark mode, buddy task permission fixes, various bug fixes
 - **v1.2** — Deployed live (Render + Neon + Vercel), mix-and-match sprite piece purchasing with dynamic pack discounts
 - **v1.3** — Improved mobile UX: tab-switching daily/weekly/date columns on narrow screens, responsive Store modal sizing, verified end-to-end on real mobile devices
+- **v1.4** — Google OAuth login (auto-links to existing accounts via verified email), Alembic migrations for schema changes, safe administrative user-deletion script
 
 ---
 
