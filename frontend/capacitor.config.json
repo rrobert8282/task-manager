@@ -1,0 +1,5 @@
+{
+  "appId": "com.robert.taskmanager",
+  "appName": "Task Manager",
+  "webDir": "dist"
+}
