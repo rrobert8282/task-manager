@@ -152,6 +152,26 @@ class TaskUpdate(BaseModel):
     is_shared:   Optional[bool] = None
 
 # --- Task routes ---
+def reset_stale_repeats(tasks: list, db: Session) -> list:
+    """For repeating tasks marked done, reset done=False once their reset
+    window has passed: daily tasks reset the day after completion, weekly
+    tasks reset 7+ days after completion. Commits any changes made."""
+    today = date.today()
+    changed = False
+    for task in tasks:
+        if not task.repeats or not task.done or not task.last_completed:
+            continue
+        if task.task_type == models.TaskType.daily and task.last_completed < today:
+            task.done = False
+            changed = True
+        elif task.task_type == models.TaskType.weekly and (today - task.last_completed).days >= 7:
+            task.done = False
+            changed = True
+    if changed:
+        db.commit()
+    return tasks
+
+
 @app.get("/tasks")
 def get_tasks(
     task_type: Optional[str] = None,
@@ -164,7 +184,8 @@ def get_tasks(
         query = query.filter(models.Task.task_type == task_type)
     if is_shared is not None:
         query = query.filter(models.Task.is_shared == is_shared)
-    return query.all()
+    tasks = query.all()
+    return reset_stale_repeats(tasks, db)
 
 @app.post("/tasks", status_code=201)
 async def create_task(
@@ -586,8 +607,8 @@ def get_buddy_tasks(
         models.Task.user_id == buddy.id,
         models.Task.is_private == False,
         models.Task.is_shared == False
-    ).all() 
-    return tasks
+    ).all()
+    return reset_stale_repeats(tasks, db)
 
 @app.get("/buddy/shared")
 def get_buddy_shared_tasks(
@@ -597,10 +618,11 @@ def get_buddy_shared_tasks(
     buddy = get_buddy(current_user.id, db)
     if not buddy:
         return []
-    return db.query(models.Task).filter(
+    tasks = db.query(models.Task).filter(
         models.Task.user_id == buddy.id,
         models.Task.is_shared == True
     ).all()
+    return reset_stale_repeats(tasks, db)
 # ── Comment routes ─────────────────────────────────────────────────────────────
 
 class CommentSchema(BaseModel):

@@ -111,9 +111,9 @@ function TaskCard({ task, onToggle, onDelete, readOnly = false, cardSprite = nul
               📅 {task.due_date}
             </p>
           )}
-          {task.task_type === "daily" && (
+          {(task.task_type === "daily" || task.task_type === "weekly") && (
             <p style={{ margin: "4px 0 0", fontSize: 11, color: "var(--text-muted)" }}>
-              {task.repeats ? "🔁 repeats daily" : "one-time"}
+              {task.repeats ? `🔁 repeats ${task.task_type}` : "one-time"}
             </p>
           )}
         </div>
@@ -165,10 +165,10 @@ function AddTaskForm({ columnType, onAdd }) {
         <input type="date" value={dueDate} onChange={e => setDueDate(e.target.value)}
           style={{ display: "block", width: "100%", marginBottom: 6, padding: "5px 8px", fontSize: 13 }} />
       )}
-      {columnType === "daily" && (
+      {(columnType === "daily" || columnType === "weekly") && (
         <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, marginBottom: 6, color: "var(--text-primary)" }}>
           <input type="checkbox" checked={repeats} onChange={e => setRepeats(e.target.checked)} />
-          Repeats daily
+          {columnType === "daily" ? "Repeats daily" : "Repeats weekly"}
         </label>
       )}
       <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, marginBottom: 8, color: "var(--text-primary)" }}>
