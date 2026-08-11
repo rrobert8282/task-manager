@@ -170,6 +170,52 @@ python delete.py <username>
 In production, run this from Render's Shell (Dashboard → your service → Shell tab), from the `backend` directory.
 
 ---
+
+## Android App (Capacitor)
+
+The web app is also shippable as a standalone Android app via [Capacitor](https://capacitorjs.com), which wraps the built React app in a native WebView shell — no UI rewrite required.
+
+### One-time environment setup
+
+- JDK 21 (Capacitor's current Android Gradle Plugin requires it as source/target compatibility)
+- Android SDK command-line tools, with `platform-tools`, `platforms;android-34`, and `build-tools;34.0.0` installed via `sdkmanager`
+- `ANDROID_HOME` and `JAVA_HOME` set appropriately (see Capacitor/Android SDK docs for exact paths on your OS)
+
+### Building the APK
+
+```bash
+cd frontend
+export VITE_API_URL="https://your-deployed-backend.onrender.com"
+export VITE_GOOGLE_CLIENT_ID="your-google-client-id"
+npm run build
+npx cap sync android
+cd android
+export JAVA_HOME=/path/to/jdk-21
+./gradlew assembleDebug
+```
+
+The debug APK is generated at `android/app/build/outputs/apk/debug/app-debug.apk`. Transfer it to an Android device and install directly (enabling "install from unknown sources" if prompted) — no Play Store listing or `adb`/USB setup required for this path.
+
+**Known build issue:** the default Capacitor/Cordova dependency set can produce a Gradle `Duplicate class` error between `kotlin-stdlib` and the older split `kotlin-stdlib-jdk7`/`kotlin-stdlib-jdk8` modules. Fixed by excluding those modules in `android/app/build.gradle`:
+
+```gradle
+configurations.all {
+    exclude group: "org.jetbrains.kotlin", module: "kotlin-stdlib-jdk7"
+    exclude group: "org.jetbrains.kotlin", module: "kotlin-stdlib-jdk8"
+}
+```
+
+### Regenerating the app icon / splash screen
+
+The source icon lives at `frontend/resources/icon.png`. To regenerate all Android densities and the splash screen from a new source image:
+
+```bash
+cd frontend
+npx capacitor-assets generate --android
+npx cap sync android
+```
+
+---
 ## Testing the Buddy / Real-Time Features
 
 1. Register two accounts (e.g. in two separate browser windows, or one normal + one incognito)
@@ -207,6 +253,7 @@ In production, run this from Render's Shell (Dashboard → your service → Shel
 - **v1.2** — Deployed live (Render + Neon + Vercel), mix-and-match sprite piece purchasing with dynamic pack discounts
 - **v1.3** — Improved mobile UX: tab-switching daily/weekly/date columns on narrow screens, responsive Store modal sizing, verified end-to-end on real mobile devices
 - **v1.4** — Google OAuth login (auto-links to existing accounts via verified email), Alembic migrations for schema changes, safe administrative user-deletion script
+- **v1.5** — Auto-reset logic for repeating daily/weekly tasks, weekly repeat UI toggle, standalone Android app via Capacitor with a generated app icon and splash screen
 
 ---
 
