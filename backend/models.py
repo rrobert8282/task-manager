@@ -1,4 +1,14 @@
-from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime, Enum, Date
+from sqlalchemy import (
+    Column,
+    Integer,
+    String,
+    Boolean,
+    ForeignKey,
+    DateTime,
+    Enum,
+    Date,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import relationship
 from database import Base
 import enum
@@ -33,7 +43,18 @@ class User(Base):
 
 class Task(Base):
     __tablename__ = "tasks"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "client_id",
+            name="uq_tasks_user_client_id",
+        ),
+    )
+
     id             = Column(Integer, primary_key=True, index=True)
+    client_id      = Column(String(64), nullable=True)
+
     title          = Column(String, nullable=False)
     description    = Column(String, default="")
     done           = Column(Boolean, default=False)
@@ -44,8 +65,13 @@ class Task(Base):
     is_shared      = Column(Boolean, default=False)
     last_completed = Column(Date, nullable=True)
     user_id        = Column(Integer, ForeignKey("users.id"), nullable=False)
-    owner          = relationship("User", back_populates="tasks")
-    comments = relationship("TaskComment", back_populates="task", cascade="all, delete-orphan")
+
+    owner = relationship("User", back_populates="tasks")
+    comments = relationship(
+        "TaskComment",
+        back_populates="task",
+        cascade="all, delete-orphan",
+    )
 
 class StoreItem(Base):
     __tablename__ = "store_items"

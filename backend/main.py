@@ -17,6 +17,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from google.oauth2 import id_token as google_id_token
 from google.auth.transport import requests as google_requests
 import os
+from sqlalchemy.exc import IntegrityError
 
 
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
@@ -149,6 +150,7 @@ class TaskCreate(BaseModel):
     due_date:    Optional[date] = None
     is_private:  bool = False
     is_shared:   bool = False
+    client_id: Optional[str] = None
 
 class TaskUpdate(BaseModel):
     title:       Optional[str] = None
@@ -201,11 +203,54 @@ async def create_task(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(auth.get_current_user)
 ):
-    new_task = models.Task(**task.dict(), user_id=current_user.id)
+    # If this client-created task was already synchronized,
+    # return the existing server row instead of creating a duplicate.
+    if task.client_id:
+        existing = (
+            db.query(models.Task)
+            .filter(
+                models.Task.user_id == current_user.id,
+                models.Task.client_id == task.client_id,
+            )
+            .first()
+        )
+
+        if existing:
+            return existing
+
+    new_task = models.Task(
+        **task.dict(),
+        user_id=current_user.id,
+    )
+
     db.add(new_task)
-    db.commit()
+
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+
+        # Handles two identical requests reaching the server
+        # at nearly the same time.
+        if task.client_id:
+            existing = (
+                db.query(models.Task)
+                .filter(
+                    models.Task.user_id == current_user.id,
+                    models.Task.client_id == task.client_id,
+                )
+                .first()
+            )
+
+            if existing:
+                return existing
+
+        raise
+
     db.refresh(new_task)
+
     await notify_task_change(current_user.id, db)
+
     return new_task
 
 @app.patch("/tasks/{task_id}")

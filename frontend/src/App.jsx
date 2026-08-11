@@ -13,6 +13,9 @@ import {
   loadCachedState,
   saveCachedSection,
   clearCachedState,
+  queueTaskCreate,
+  getPendingOperations,
+  deletePendingOperation,
 } from "./offline/cache"
 
 const SPRITE_KEYS = new Set(["card_sprite", "column_sprite", "bg_overlay_sprite", "profile_sprite"])
@@ -122,7 +125,7 @@ function TaskCard({ task, onToggle, onDelete, readOnly = false, cardSprite = nul
             </p>
           )}
         </div>
-        {!readOnly && (
+        {!readOnly && !task._pending && (
           <div style={{ display: "flex", gap: 4, marginLeft: 8 }}>
           {!task.done && (
             <button onClick={() => onToggle(task)} style={{ fontSize: 12, padding: "2px 8px" }}>
@@ -135,7 +138,22 @@ function TaskCard({ task, onToggle, onDelete, readOnly = false, cardSprite = nul
           </div>
         )}
       </div>
-      <TaskComments taskId={task.id} canComment={readOnly} />
+      {task._pending ? (
+  <p
+    style={{
+      margin: "6px 0 0",
+      fontSize: 11,
+      color: "var(--text-muted)",
+    }}
+  >
+    ⏳ Pending sync
+  </p>
+) : (
+  <TaskComments
+    taskId={task.id}
+    canComment={readOnly}
+  />
+)}
     </div>
   )
 }
@@ -398,23 +416,34 @@ async function refreshFromServer() {
 
   setSyncStatus("syncing")
 
-  // Best-effort wake-up.
-  // Never block normal API requests if /health fails or is blocked.
+  // Wake-up optimization only.
   warmBackend()
 
-  const results = await Promise.all([
-    fetchTasks(),
-    fetchBuddyTasks(),
-    fetchBuddySharedTasks(),
-    fetchAppState(),
-  ])
+  const outboxSynced =
+    await flushCreateTaskOutbox()
 
-  if (results.every(Boolean)) {
+  const results =
+    await Promise.all([
+      fetchTasks(),
+      fetchBuddyTasks(),
+      fetchBuddySharedTasks(),
+      fetchAppState(),
+    ])
+
+  if (
+    outboxSynced &&
+    results.every(Boolean)
+  ) {
     setSyncStatus("synced")
     return true
   }
 
-  setSyncStatus("offline")
+  setSyncStatus(
+    navigator.onLine
+      ? "pending"
+      : "offline"
+  )
+
   return false
 }
 
@@ -532,21 +561,144 @@ async function refreshFromServer() {
   }
 }, [userKey])
 
+function makeOptimisticTask(payload) {
+  return {
+    id: `local:${payload.client_id}`,
+    client_id: payload.client_id,
+
+    title: payload.title,
+    description:
+      payload.description || "",
+
+    task_type:
+      payload.task_type || "daily",
+
+    repeats:
+      payload.repeats || false,
+
+    due_date:
+      payload.due_date || null,
+
+    is_private:
+      payload.is_private || false,
+
+    is_shared:
+      payload.is_shared || false,
+
+    done: false,
+    last_completed: null,
+
+    _pending: true,
+  }
+}
+
+async function flushCreateTaskOutbox() {
+  if (!userKey) {
+    return true
+  }
+
+  const operations =
+    await getPendingOperations(
+      userKey
+    )
+
+  const creates =
+    operations.filter(
+      operation =>
+        operation.type ===
+        "create_task"
+    )
+
+  if (!creates.length) {
+    return true
+  }
+
+  for (const operation of creates) {
+    try {
+      await axios.post(
+        `${API}/tasks`,
+        operation.payload
+      )
+
+      await deletePendingOperation(
+        operation.id
+      )
+    } catch (error) {
+      console.error(
+        "Could not sync queued task",
+        error
+      )
+
+      // Keep it in IndexedDB.
+      // We will retry on the next
+      // reconnect / foreground refresh.
+      return false
+    }
+  }
+
+  return true
+}
+
   async function fetchTasks() {
   try {
-    const res = await axios.get(`${API}/tasks`)
+    const res =
+      await axios.get(
+        `${API}/tasks`
+      )
 
-    setTasks(res.data)
+    const operations =
+      await getPendingOperations(
+        userKey
+      )
+
+    const pendingCreates =
+      operations.filter(
+        operation =>
+          operation.type ===
+          "create_task"
+      )
+
+    const serverClientIds =
+      new Set(
+        res.data
+          .map(task => task.client_id)
+          .filter(Boolean)
+      )
+
+    const optimisticTasks =
+      pendingCreates
+        .filter(
+          operation =>
+            !serverClientIds.has(
+              operation.payload.client_id
+            )
+        )
+        .map(operation =>
+          makeOptimisticTask(
+            operation.payload
+          )
+        )
+
+    const mergedTasks = [
+      ...res.data,
+      ...optimisticTasks,
+    ]
+
+    setTasks(mergedTasks)
 
     await saveCachedSection(
       userKey,
       "tasks",
-      res.data
+      mergedTasks
     )
 
     return true
   } catch (error) {
-    console.error("Could not refresh tasks", error)
+    console.error(
+      "Could not refresh tasks",
+      error
+    )
+
     return false
   }
 }
@@ -614,11 +766,58 @@ async function fetchBuddyTasks() {
 }
 
   async function addTask(data) {
-    await axios.post(`${API}/tasks`, data)
-    fetchTasks()
-    fetchBuddyTasks()
-    fetchBuddySharedTasks()
+  const clientId =
+    crypto.randomUUID()
+
+  const payload = {
+    ...data,
+    client_id: clientId,
   }
+
+  const optimisticTask =
+    makeOptimisticTask(payload)
+
+  const nextTasks = [
+    ...tasks,
+    optimisticTask,
+  ]
+
+  const operation = {
+    id: `create_task:${clientId}`,
+    type: "create_task",
+    payload,
+    createdAt:
+      new Date().toISOString(),
+  }
+
+  // One IndexedDB transaction persists
+  // both the local task and its outbox entry.
+  await queueTaskCreate(
+    userKey,
+    nextTasks,
+    operation
+  )
+
+  setTasks(nextTasks)
+
+  if (!navigator.onLine) {
+    setSyncStatus("offline")
+    return
+  }
+
+  setSyncStatus("syncing")
+
+  const synced =
+    await flushCreateTaskOutbox()
+
+  if (synced) {
+    await fetchTasks()
+    setSyncStatus("synced")
+  } else {
+    setSyncStatus("pending")
+  }
+}
+
   async function toggleDone(task) {
     const res = await axios.patch(`${API}/tasks/${task.id}/complete`)
     if (!task.done) setCoins(res.data.total_coins)
