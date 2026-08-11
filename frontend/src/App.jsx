@@ -8,7 +8,12 @@ import TaskComments from "./TaskComments"
 import Auth from "./Auth"
 import Profile from "./Profile"
 
-const API = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000"
+import { API, warmBackend } from "./network"
+import {
+  loadCachedState,
+  saveCachedSection,
+  clearCachedState,
+} from "./offline/cache"
 
 const SPRITE_KEYS = new Set(["card_sprite", "column_sprite", "bg_overlay_sprite", "profile_sprite"])
 
@@ -258,6 +263,8 @@ export default function App() {
     return () => window.removeEventListener("resize", handleResize)
   }, [])
   const [equippedSprites, setEquippedSprites]   = useState({})
+  const [syncStatus, setSyncStatus] = useState("idle")
+  const userKey = user?.email || user?.username || null
 
   function handleLogin(data) {
     localStorage.setItem("token", data.access_token)
@@ -266,92 +273,348 @@ export default function App() {
   }
 
   function handleLogout() {
-    localStorage.removeItem("token")
-    localStorage.removeItem("user")
-    setUser(null)
-    setTasks([])
-    setCoins(0)
-    setEquippedSprites({})
+  if (userKey) {
+    clearCachedState(userKey).catch(console.error)
   }
 
+  localStorage.removeItem("token")
+  localStorage.removeItem("user")
+
+  setUser(null)
+  setTasks([])
+  setBuddyTasks([])
+  setBuddySharedTasks([])
+  setCoins(0)
+  setEquippedSprites({})
+  setSyncStatus("idle")
+}
+
+function applyAppState(appState) {
+  if (!appState) return
+
+  const {
+    coins: cachedCoins,
+    equipped,
+    storeItems,
+  } = appState
+
+  setCoins(cachedCoins ?? 0)
+
+  const sprites = {}
+
+  SPRITE_KEYS.forEach(key => {
+    if (equipped?.[key]) {
+      sprites[key] = equipped[key]
+    }
+  })
+
+  setEquippedSprites(sprites)
+
+  const equippedItems = {}
+
+  Object.entries(equipped || {}).forEach(([type, value]) => {
+    if (SPRITE_KEYS.has(type)) {
+      equippedItems[type] = value
+    } else {
+      const found = (storeItems || []).find(
+        item => item.id === value
+      )
+
+      if (found) {
+        equippedItems[type] = found
+      }
+    }
+  })
+
+  applyTheme(equippedItems)
+}
+
+async function hydrateFromCache() {
+  if (!userKey) return false
+
+  try {
+    const cached = await loadCachedState(userKey)
+
+    if (!cached) {
+      return false
+    }
+
+    if (cached.tasks) {
+      setTasks(cached.tasks)
+    }
+
+    if (cached.buddyTasks) {
+      setBuddyTasks(cached.buddyTasks)
+    }
+
+    if (cached.buddySharedTasks) {
+      setBuddySharedTasks(cached.buddySharedTasks)
+    }
+
+    if (cached.appState) {
+      applyAppState(cached.appState)
+    }
+
+    setSyncStatus("cached")
+
+    return true
+  } catch (error) {
+    console.error("Could not load offline cache", error)
+    return false
+  }
+}
+
+
+async function fetchAppState() {
+  try {
+    const [stateRes, itemsRes] = await Promise.all([
+      axios.get(`${API}/state`),
+      axios.get(`${API}/store/items`),
+    ])
+
+    const appState = {
+      coins: stateRes.data.coins,
+      equipped: stateRes.data.equipped || {},
+      storeItems: itemsRes.data,
+    }
+
+    applyAppState(appState)
+
+    await saveCachedSection(
+      userKey,
+      "appState",
+      appState
+    )
+
+    return true
+  } catch (error) {
+    console.error("Could not refresh app state", error)
+    return false
+  }
+}
+
+async function refreshFromServer() {
+  if (!userKey) return false
+
+  setSyncStatus("syncing")
+
+  const ready = await warmBackend()
+
+  if (!ready) {
+    setSyncStatus("offline")
+    return false
+  }
+
+  const results = await Promise.all([
+    fetchTasks(),
+    fetchBuddyTasks(),
+    fetchBuddySharedTasks(),
+    fetchAppState(),
+  ])
+
+  if (results.every(Boolean)) {
+    setSyncStatus("synced")
+    return true
+  }
+
+  setSyncStatus("offline")
+  return false
+}
+
+
   useEffect(() => {
-    if (!user) return
-    loadFonts()
-    fetchTasks()
-    fetchBuddyTasks()
-    fetchBuddySharedTasks()
-    axios.get(`${API}/state`).then(res => {
-      setCoins(res.data.coins)
-      const eq = res.data.equipped
+  if (!userKey) return
 
-      // Extract sprite paths into component state
-      const sprites = {}
-      SPRITE_KEYS.forEach(key => { if (eq[key]) sprites[key] = eq[key] })
-      setEquippedSprites(sprites)
+  loadFonts()
 
-      // Build equippedItems for applyTheme
-      // Sprite slots are path strings — pass through directly
-      // Regular slots are item IDs — look up the full item object
-      axios.get(`${API}/store/items`).then(itemsRes => {
-        const equippedItems = {}
-        Object.entries(eq).forEach(([type, val]) => {
-          if (SPRITE_KEYS.has(type)) {
-            equippedItems[type] = val
-          } else {
-            const found = itemsRes.data.find(i => i.id === val)
-            if (found) equippedItems[type] = found
-          }
-        })
-        applyTheme(equippedItems)
-      })
-    })
+  // Load the previous local state immediately.
+  hydrateFromCache()
+
+  // At the same time, try to obtain fresh server state.
+  refreshFromServer()
+
+  function handleOnline() {
+    refreshFromServer()
+  }
+
+  function handleVisibility() {
+    if (document.visibilityState === "visible") {
+      refreshFromServer()
+    }
+  }
+
+  window.addEventListener("online", handleOnline)
+  document.addEventListener(
+    "visibilitychange",
+    handleVisibility
+  )
+
+  return () => {
+    window.removeEventListener("online", handleOnline)
+    document.removeEventListener(
+      "visibilitychange",
+      handleVisibility
+    )
+  }
+}, [userKey])
+
+  useEffect(() => {
+  if (!userKey) return
+
+  let ws = null
+  let retryTimer = null
+  let stopped = false
+
+  async function connect() {
+    if (stopped || !navigator.onLine) {
+      return
+    }
+
+    const ready = await warmBackend()
+
+    if (!ready || stopped) {
+      retryTimer = setTimeout(connect, 10000)
+      return
+    }
 
     const token = localStorage.getItem("token")
     const wsBase = API.replace(/^http/, "ws")
-    const ws = new WebSocket(`${wsBase}/ws?token=${token}`)
-    ws.onmessage = (event) => {
+
+    ws = new WebSocket(
+      `${wsBase}/ws?token=${token}`
+    )
+
+    ws.onmessage = event => {
       try {
         const msg = JSON.parse(event.data)
+
         if (msg.type === "tasks_changed") {
-          fetchTasks()
-          fetchBuddyTasks()
-          fetchBuddySharedTasks()
+          refreshFromServer()
         }
-      } catch (e) {
-        // ignore malformed messages
+      } catch {
+        // Ignore malformed messages.
       }
     }
-    ws.onerror = (e) => {
-      console.error("WebSocket error", e)
+
+    ws.onerror = error => {
+      console.error("WebSocket error", error)
     }
 
-    return () => {
+    ws.onclose = () => {
+      if (!stopped) {
+        retryTimer = setTimeout(connect, 5000)
+      }
+    }
+  }
+
+  function handleOnline() {
+    if (
+      !ws ||
+      ws.readyState === WebSocket.CLOSED
+    ) {
+      connect()
+    }
+  }
+
+  connect()
+
+  window.addEventListener("online", handleOnline)
+
+  return () => {
+    stopped = true
+    clearTimeout(retryTimer)
+
+    window.removeEventListener(
+      "online",
+      handleOnline
+    )
+
+    if (ws) {
       ws.close()
     }
-  }, [user])
+  }
+}, [userKey])
 
   async function fetchTasks() {
+  try {
     const res = await axios.get(`${API}/tasks`)
-    setTasks(res.data)
-  }
 
-  async function fetchBuddyTasks() {
-    try {
-      const res = await axios.get(`${API}/buddy/tasks`)
-      setBuddyTasks(res.data)
-    } catch (e) {
-      setBuddyTasks([])
-    }
+    setTasks(res.data)
+
+    await saveCachedSection(
+      userKey,
+      "tasks",
+      res.data
+    )
+
+    return true
+  } catch (error) {
+    console.error("Could not refresh tasks", error)
+    return false
   }
+}
+
+async function fetchBuddyTasks() {
+  try {
+    const res = await axios.get(`${API}/buddy/tasks`)
+
+    setBuddyTasks(res.data)
+
+    await saveCachedSection(
+      userKey,
+      "buddyTasks",
+      res.data
+    )
+
+    return true
+  } catch (error) {
+    if (error.response) {
+      setBuddyTasks([])
+
+      await saveCachedSection(
+        userKey,
+        "buddyTasks",
+        []
+      )
+
+      return true
+    }
+
+    // No response means network/backend unavailable.
+    // Preserve the cached buddy tasks.
+    return false
+  }
+}
 
   async function fetchBuddySharedTasks() {
-    try {
-      const res = await axios.get(`${API}/buddy/shared`)
-      setBuddySharedTasks(res.data)
-    } catch (e) {
+  try {
+    const res = await axios.get(`${API}/buddy/shared`)
+
+    setBuddySharedTasks(res.data)
+
+    await saveCachedSection(
+      userKey,
+      "buddySharedTasks",
+      res.data
+    )
+
+    return true
+  } catch (error) {
+    if (error.response) {
       setBuddySharedTasks([])
+
+      await saveCachedSection(
+        userKey,
+        "buddySharedTasks",
+        []
+      )
+
+      return true
     }
+
+    return false
   }
+}
 
   async function addTask(data) {
     await axios.post(`${API}/tasks`, data)
