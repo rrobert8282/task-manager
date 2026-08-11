@@ -2,6 +2,7 @@ from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 from pydantic import BaseModel, EmailStr
 from typing import Optional
 from datetime import date
@@ -17,14 +18,21 @@ from google.oauth2 import id_token as google_id_token
 from google.auth.transport import requests as google_requests
 import os
 
+
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
-
-
 
 models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
 
+@app.get("/health", include_in_schema=False)
+def health(db: Session = Depends(get_db)):
+    db.execute(text("SELECT 1"))
+
+    return {
+        "status": "ok",
+        "database": "ok",
+    }
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
