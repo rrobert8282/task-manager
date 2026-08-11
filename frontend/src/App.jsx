@@ -398,12 +398,9 @@ async function refreshFromServer() {
 
   setSyncStatus("syncing")
 
-  const ready = await warmBackend()
-
-  if (!ready) {
-    setSyncStatus("offline")
-    return false
-  }
+  // Best-effort wake-up.
+  // Never block normal API requests if /health fails or is blocked.
+  warmBackend()
 
   const results = await Promise.all([
     fetchTasks(),
@@ -470,12 +467,12 @@ async function refreshFromServer() {
       return
     }
 
-    const ready = await warmBackend()
+// Best-effort wake-up only.
+  warmBackend()
 
-    if (!ready || stopped) {
-      retryTimer = setTimeout(connect, 10000)
-      return
-    }
+  if (stopped) {
+    return
+  }
 
     const token = localStorage.getItem("token")
     const wsBase = API.replace(/^http/, "ws")
