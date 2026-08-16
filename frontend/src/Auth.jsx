@@ -3,7 +3,7 @@ import axios from "axios"
 
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || ""
 
-const API = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000"
+import { API } from "./network"
 
 export default function Auth({ onLogin }) {
   const [mode, setMode]         = useState("login")

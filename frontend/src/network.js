@@ -20,3 +20,7 @@ export function warmBackend() {
 
   return warmupInFlight
 }
+
+export function isWarmBackendRunning() {
+  return !!warmupInFlight
+}

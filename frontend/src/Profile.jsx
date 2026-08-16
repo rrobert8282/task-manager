@@ -2,7 +2,7 @@ import { useState, useEffect } from "react"
 import axios from "axios"
 import { spriteUrl } from "./theme"
 
-const API = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000"
+import { API } from "./network"
 
 export default function Profile({ user, coins }) {
   const [profileSprite, setProfileSprite]     = useState(null)

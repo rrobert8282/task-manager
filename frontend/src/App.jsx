@@ -8,7 +8,7 @@ import TaskComments from "./TaskComments"
 import Auth from "./Auth"
 import Profile from "./Profile"
 
-import { API, warmBackend } from "./network"
+import { API, warmBackend, isWarmBackendRunning } from "./network"
 import {
   loadCachedState,
   saveCachedSection,
@@ -16,9 +16,35 @@ import {
   queueTaskCreate,
   getPendingOperations,
   deletePendingOperation,
+  incrementOperationAttempts,
+  markOperationFailed,
+  deleteFailedOperations,
+  queueTaskComplete,
+  queueTaskDelete,
+  saveCachedStoreItems,
+  saveCachedInventory,
 } from "./offline/cache"
 
 const SPRITE_KEYS = new Set(["card_sprite", "column_sprite", "bg_overlay_sprite", "profile_sprite"])
+
+function formatRelativeTime(timestamp) {
+  const now = Date.now();
+  const diff = now - timestamp;
+  
+  const minutes = Math.floor(diff / (1000 * 60));
+  const hours = Math.floor(diff / (1000 * 60 * 60));
+
+  if (minutes < 1) {
+    return "just now";
+  } else if (minutes < 60) {
+    return `${minutes} minute${minutes !== 1 ? 's' : ''} ago`;
+  } else if (hours < 24) {
+    return `${hours} hour${hours !== 1 ? 's' : ''} ago`;
+  } else {
+    const days = Math.floor(hours / 24);
+    return `${days} day${days !== 1 ? 's' : ''} ago`;
+  }
+}
 
 axios.interceptors.request.use(config => {
   const token = localStorage.getItem("token")
@@ -132,7 +158,18 @@ function TaskCard({ task, onToggle, onDelete, readOnly = false, cardSprite = nul
               Done
             </button>
           )}
-            <button onClick={() => onDelete(task.id)} style={{ fontSize: 12, padding: "2px 8px", color: "#ef4444" }}>
+            <button 
+              onClick={async () => {
+                console.log("DEBUG: Delete button clicked with task.id:", task.id);
+                try {
+                  await onDelete(task.id);
+                  console.log("DEBUG: Delete completed successfully");
+                } catch (error) {
+                  console.error("DEBUG: Delete failed with error:", error);
+                }
+              }} 
+              style={{ fontSize: 12, padding: "2px 8px", color: "#ef4444" }}
+            >
               ✕
             </button>
           </div>
@@ -282,6 +319,8 @@ export default function App() {
   }, [])
   const [equippedSprites, setEquippedSprites]   = useState({})
   const [syncStatus, setSyncStatus] = useState("idle")
+  const [lastSyncedTime, setLastSyncedTime] = useState(null)
+  const [failedOperations, setFailedOperations] = useState([])
   const userKey = user?.email || user?.username || null
 
   function handleLogin(data) {
@@ -372,6 +411,20 @@ async function hydrateFromCache() {
     if (cached.appState) {
       applyAppState(cached.appState)
     }
+    
+    // Load cached store items and inventory
+    if (cached.storeItems) {
+      // This would typically be done in fetchAppState but we're hydrating cache
+    }
+    
+    if (cached.inventory) {
+      // This would typically be done in fetchInventory but we're hydrating cache
+    }
+
+    // Set the last synced timestamp for display
+    if (cached._lastSynced) {
+      setLastSyncedTime(cached._lastSynced)
+    }
 
     setSyncStatus("cached")
 
@@ -403,6 +456,12 @@ async function fetchAppState() {
       "appState",
       appState
     )
+    
+    // We also need to cache store items and inventory
+    await saveCachedStoreItems(
+      userKey,
+      itemsRes.data
+    )
 
     return true
   } catch (error) {
@@ -411,7 +470,26 @@ async function fetchAppState() {
   }
 }
 
-async function refreshFromServer() {
+async function fetchInventory() {
+  try {
+    const [invRes] = await Promise.all([
+      axios.get(`${API}/store/inventory`),
+    ])
+    
+    // Cache the inventory
+    await saveCachedInventory(
+      userKey,
+      invRes.data
+    )
+    
+    return true
+  } catch (error) {
+    console.error("Could not refresh inventory", error)
+    return false
+  }
+}
+
+  async function refreshFromServer() {
   if (!userKey) return false
 
   setSyncStatus("syncing")
@@ -420,7 +498,7 @@ async function refreshFromServer() {
   warmBackend()
 
   const outboxSynced =
-    await flushCreateTaskOutbox()
+    await flushOutbox()
 
   const results =
     await Promise.all([
@@ -428,6 +506,7 @@ async function refreshFromServer() {
       fetchBuddyTasks(),
       fetchBuddySharedTasks(),
       fetchAppState(),
+      fetchInventory(),
     ])
 
   if (
@@ -447,20 +526,37 @@ async function refreshFromServer() {
   return false
 }
 
+// Function to explicitly retry failed sync operations on connection restore
+async function retryFailedOperations() {
+  // Clean up expired failed operations
+  await deleteFailedOperations()
+  
+  // Try to flush any remaining pending operations
+  const synced = await flushOutbox()
+  
+  if (synced) {
+    // If we successfully synced, refresh state
+    await refreshFromServer()
+  }
+}
+
 
   useEffect(() => {
   if (!userKey) return
 
   loadFonts()
 
-  // Load the previous local state immediately.
-  hydrateFromCache()
-
-  // At the same time, try to obtain fresh server state.
-  refreshFromServer()
+  // Load the previous local state first, and WAIT for it to finish, so a
+  // slow IndexedDB read can never resolve after (and overwrite) the fresh
+  // server data below with a stale cached snapshot.
+  ;(async () => {
+    await hydrateFromCache()
+    await refreshFromServer()
+  })()
 
   function handleOnline() {
-    refreshFromServer()
+    // On reconnect, attempt to sync any pending operations and clean up failed ones
+    retryFailedOperations()
   }
 
   function handleVisibility() {
@@ -592,7 +688,28 @@ function makeOptimisticTask(payload) {
   }
 }
 
-async function flushCreateTaskOutbox() {
+let flushOutboxInFlight = null
+
+async function flushOutbox() {
+  if (!userKey) {
+    return true
+  }
+
+  // Ensure only one flush ever runs at a time.
+  if (flushOutboxInFlight) {
+    return flushOutboxInFlight
+  }
+
+  flushOutboxInFlight = _flushOutbox()
+  try {
+    const result = await flushOutboxInFlight
+    return result
+  } finally {
+    flushOutboxInFlight = null
+  }
+}
+
+async function _flushOutbox() {
   if (!userKey) {
     return true
   }
@@ -602,24 +719,42 @@ async function flushCreateTaskOutbox() {
       userKey
     )
 
-  const creates =
-    operations.filter(
-      operation =>
-        operation.type ===
-        "create_task"
-    )
-
-  if (!creates.length) {
+  if (!operations.length) {
+    // Clean up any failed operations that have exceeded max retries
+    await deleteFailedOperations()
     return true
   }
 
-  for (const operation of creates) {
-    try {
-      await axios.post(
-        `${API}/tasks`,
-        operation.payload
-      )
+  // Process operations in order, but handle dependencies correctly 
+  // (i.e., create tasks before completing or deleting them)
+  let allDone = true
 
+  for (const operation of operations) {
+    try {
+      if (operation.type === "create_task") {
+        await axios.post(
+          `${API}/tasks`,
+          operation.payload
+        )
+      } else if (operation.type === "complete_task") {
+        await axios.patch(`${API}/tasks/${operation.taskId}/complete`)
+      } else if (operation.type === "delete_task") {
+        await axios.delete(`${API}/tasks/${operation.taskId}`)
+      }
+
+      // For delete operations, we also need to clean up the snapshot cache
+      if (operation.type === "delete_task") {
+        // Get the current tasks from cache
+        const cachedState = await loadCachedState(userKey);
+        let updatedTasks = cachedState?.tasks || [];
+        
+        // Filter out the deleted task from the cached copy
+        updatedTasks = updatedTasks.filter(task => task.id !== operation.taskId);
+        
+        // Update the cached snapshot with the new tasks list
+        await saveCachedSection(userKey, "tasks", updatedTasks);
+      }
+      
       await deletePendingOperation(
         operation.id
       )
@@ -629,14 +764,33 @@ async function flushCreateTaskOutbox() {
         error
       )
 
-      // Keep it in IndexedDB.
-      // We will retry on the next
-      // reconnect / foreground refresh.
-      return false
+      // Increment attempt count
+      await incrementOperationAttempts(operation.id, 1)
+      
+      // Check if we've exceeded retry limit
+      const maxRetries = 5;
+      if ((operation.attempts || 0) >= maxRetries) {
+        // Mark permanently failed and clean up
+        await markOperationFailed(operation.id)
+        // Don't return false here - still process remaining operations
+        allDone = false
+      } else {
+        // Keep it in IndexedDB to retry later.
+        allDone = false
+      }
     }
   }
 
-  return true
+  return allDone
+}
+
+async function flushCreateTaskOutbox() {
+  if (!userKey) {
+    return true
+  }
+
+  // For backward compatibility, we still call this but it now delegates to flushOutbox
+  return await flushOutbox()
 }
 
   async function fetchTasks() {
@@ -766,70 +920,181 @@ async function fetchBuddyTasks() {
 }
 
   async function addTask(data) {
-  const clientId =
-    crypto.randomUUID()
+    const clientId =
+      crypto.randomUUID()
 
-  const payload = {
-    ...data,
-    client_id: clientId,
+    const payload = {
+      ...data,
+      client_id: clientId,
+    }
+
+    const optimisticTask =
+      makeOptimisticTask(payload)
+
+    const nextTasks = [
+      ...tasks,
+      optimisticTask,
+    ]
+
+    const operation = {
+      id: `create_task:${clientId}`,
+      type: "create_task",
+      payload,
+      createdAt:
+        new Date().toISOString(),
+    }
+
+    // One IndexedDB transaction persists
+    // both the local task and its outbox entry.
+    await queueTaskCreate(
+      userKey,
+      nextTasks,
+      operation
+    )
+
+    setTasks(nextTasks)
+
+    if (!navigator.onLine) {
+      setSyncStatus("offline")
+      return
+    }
+
+    setSyncStatus("syncing")
+
+    const synced =
+      await flushOutbox()
+
+    if (synced) {
+      await fetchTasks()
+      setSyncStatus("synced")
+    } else {
+      setSyncStatus("pending")
+    }
   }
-
-  const optimisticTask =
-    makeOptimisticTask(payload)
-
-  const nextTasks = [
-    ...tasks,
-    optimisticTask,
-  ]
-
-  const operation = {
-    id: `create_task:${clientId}`,
-    type: "create_task",
-    payload,
-    createdAt:
-      new Date().toISOString(),
-  }
-
-  // One IndexedDB transaction persists
-  // both the local task and its outbox entry.
-  await queueTaskCreate(
-    userKey,
-    nextTasks,
-    operation
-  )
-
-  setTasks(nextTasks)
-
-  if (!navigator.onLine) {
-    setSyncStatus("offline")
-    return
-  }
-
-  setSyncStatus("syncing")
-
-  const synced =
-    await flushCreateTaskOutbox()
-
-  if (synced) {
-    await fetchTasks()
-    setSyncStatus("synced")
-  } else {
-    setSyncStatus("pending")
-  }
-}
 
   async function toggleDone(task) {
-    const res = await axios.patch(`${API}/tasks/${task.id}/complete`)
-    if (!task.done) setCoins(res.data.total_coins)
-    fetchTasks()
-    fetchBuddyTasks()
-    fetchBuddySharedTasks()
+    // Create optimistic change immediately
+    const updatedTasks = tasks.map(t => 
+      t.id === task.id ? { ...t, done: !t.done } : t
+    )
+    
+    setTasks(updatedTasks)
+    
+    if (task._pending) {
+      // If this is an offline task that needs to be queued, 
+      // but it was only a local task without server ID yet,
+      // we need special handling for dependencies
+      const operation = {
+        id: `complete_task:${task.id}`,
+        type: "complete_task",
+        taskId: task.id,
+        createdAt:
+          new Date().toISOString(),
+      }
+      
+      await queueTaskComplete(
+        userKey,
+        updatedTasks,
+        operation
+      )
+    } else {
+      // If it's a real server task, send the request now
+      try {
+        const res = await axios.patch(`${API}/tasks/${task.id}/complete`)
+        if (!task.done) setCoins(res.data.total_coins)
+        fetchTasks()
+        fetchBuddyTasks()
+        fetchBuddySharedTasks()
+      } catch (error) {
+        // If we get network error while completing, queue it
+        if (!navigator.onLine) {
+          const operation = {
+            id: `complete_task:${task.id}`,
+            type: "complete_task",
+            taskId: task.id,
+            createdAt:
+              new Date().toISOString(),
+          }
+          
+          await queueTaskComplete(
+            userKey,
+            updatedTasks,
+            operation
+          )
+          setSyncStatus("offline")
+        } else {
+          // Re-throw if not offline - this shouldn't happen normally 
+          throw error
+        }
+      }
+    }
   }
   async function deleteTask(id) {
-    await axios.delete(`${API}/tasks/${id}`)
-    fetchTasks()
-    fetchBuddyTasks()
-    fetchBuddySharedTasks()
+    console.log("deleteTask called with id:", id, "typeof:", typeof id)
+    
+    // For tasks that are already synced to server, the ID should be a string
+    // Local tasks (pending operations) have IDs like "local:uuid"
+    if (id === undefined || id === null) {
+      console.error("Invalid task ID passed to deleteTask:", id);
+      return;
+    }
+    
+    // Handle both numeric server IDs and local string IDs by converting to string for comparison
+    const taskId = String(id);
+    
+    // Create optimistic change immediately - need to compare by string for consistency
+    const updatedTasks = tasks.filter(task => String(task.id) !== taskId)
+    setTasks(updatedTasks)
+    console.log("Processing delete for taskId:", taskId, "type:", typeof taskId)
+    
+    if (taskId.startsWith("local:")) {
+      // If this is an offline task that needs to be queued
+      const operation = {
+        id: `delete_task:${taskId}`,
+        type: "delete_task",
+        taskId: taskId,
+        createdAt:
+          new Date().toISOString(),
+      }
+      
+      await queueTaskDelete(
+        userKey,
+        updatedTasks,
+        operation
+      )
+    } else {
+      // If it's a real server task, send the request now
+      try {
+        console.log("Sending DELETE request to:", `${API}/tasks/${taskId}`)
+        await axios.delete(`${API}/tasks/${taskId}`)
+        console.log("DELETE request successful")
+        fetchTasks()
+        fetchBuddyTasks()
+        fetchBuddySharedTasks()
+      } catch (error) {
+        console.error("DELETE request failed:", error)
+        if (!navigator.onLine) {
+          // If we get network error while deleting, queue it
+          const operation = {
+            id: `delete_task:${taskId}`,
+            type: "delete_task", 
+            taskId: taskId,
+            createdAt:
+              new Date().toISOString(),
+          }
+          
+          await queueTaskDelete(
+            userKey,
+            updatedTasks,
+            operation
+          )
+          setSyncStatus("offline")
+        } else {
+          // Re-throw if not offline - this shouldn't happen normally 
+          throw error
+        }
+      }
+    }
   }
   const byType       = (type, shared) => tasks.filter(t => t.task_type === type && t.is_shared === shared)
   const cardSprite   = equippedSprites.card_sprite        ? spriteUrl(equippedSprites.card_sprite)        : null
@@ -869,6 +1134,11 @@ async function fetchBuddyTasks() {
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 32 }}>
           <h1 style={{ margin: 0, fontSize: 22, color: "var(--app-accent)" }}>Task Manager</h1>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            {lastSyncedTime && (
+              <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                Last synced {formatRelativeTime(lastSyncedTime)}
+              </span>
+            )}
             <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>👤 {user.username}</span>
             <span style={{ fontSize: 14, fontWeight: 500, color: "var(--text-primary)" }}>🪙 {coins}</span>
             <button onClick={() => setStore(true)} style={{ fontSize: 13, padding: "6px 14px", borderRadius: 8, border: "1px solid var(--border)", cursor: "pointer" }}>
