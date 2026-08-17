@@ -330,6 +330,7 @@ def seed_store():
         models.StoreItem(name="Forest",   description="Calm green tones",     item_type=models.ItemType.color_scheme, cost=0,   css_value='{"--app-accent":"#16a34a","--column-bg":"#dcfce7","--task-bg":"#f0fdf4","--text-primary":"#14532d","--text-secondary":"#166534","--text-muted":"#4ade80","--border":"#86efac","--form-bg":"#dcfce7","--surface":"#dcfce7","--app-bg":"#f0fdf4"}', preview="#16a34a"),
         models.StoreItem(name="Sunset",   description="Warm orange and pink", item_type=models.ItemType.color_scheme, cost=50,  css_value='{"--app-accent":"#f97316","--column-bg":"#ffedd5","--task-bg":"#fff7ed","--text-primary":"#7c2d12","--text-secondary":"#9a3412","--text-muted":"#fb923c","--border":"#fed7aa","--form-bg":"#ffedd5","--surface":"#ffedd5","--app-bg":"#fff7ed"}', preview="#f97316"),
         models.StoreItem(name="Midnight", description="Dark mode vibes",      item_type=models.ItemType.color_scheme, cost=50,  css_value='{"--app-accent":"#818cf8","--column-bg":"#1e293b","--task-bg":"#0f172a","--text-primary":"#f1f5f9","--text-secondary":"#94a3b8","--text-muted":"#64748b","--border":"#334155","--form-bg":"#1e293b","--surface":"#1e293b","--app-bg":"#0f172a"}', preview="#818cf8"),
+        models.StoreItem(name="Void", description="Deep black with grey accents", item_type=models.ItemType.color_scheme, cost=0, css_value='{"--app-accent":"#60a5fa","--column-bg":"#111827","--task-bg":"#1f2937","--text-primary":"#f9fafb","--text-secondary":"#d1d5db","--text-muted":"#9ca3af","--border":"#374151","--form-bg":"#111827","--surface":"#1f2937","--app-bg":"#000000"}', preview="#60a5fa"),
         models.StoreItem(name="Rose",     description="Soft pink palette",    item_type=models.ItemType.color_scheme, cost=100, css_value='{"--app-accent":"#e11d48","--column-bg":"#ffe4e6","--task-bg":"#fff1f2","--text-primary":"#881337","--text-secondary":"#9f1239","--text-muted":"#fb7185","--border":"#fecdd3","--form-bg":"#ffe4e6","--surface":"#ffe4e6","--app-bg":"#fff1f2"}', preview="#e11d48"),
         models.StoreItem(name="Default Sans", description="Clean system font",   item_type=models.ItemType.font, cost=0,   css_value="system-ui, sans-serif",       preview="Aa"),
         models.StoreItem(name="Roboto",       description="Modern and readable", item_type=models.ItemType.font, cost=0,   css_value="'Roboto', sans-serif",         preview="Aa"),
@@ -732,7 +733,7 @@ SPRITE_PACK_DEFS = {
     "forest": {
         "display_name": "Forest Friends",
         "description": "Woodland creatures for your tasks",
-        "base_cost": 150,
+        "base_cost": 110,
     },
     "space": {
         "display_name": "Space Explorer",
@@ -742,7 +743,25 @@ SPRITE_PACK_DEFS = {
     "ocean": {
         "display_name": "Ocean Depths",
         "description": "Deep sea creatures for deep focus",
-        "base_cost": 175,
+        "base_cost": 100,
+    },
+    "triangle_noise": {
+        "display_name": "Triangle Noise",
+        "description": "Geometric noise for your tasks",
+        "base_cost": 240,
+        "ext": "webp",
+    },
+    "triangle_wire": {
+        "display_name": "Triangle Wire",
+        "description": "Wireframe geometry for your tasks",
+        "base_cost": 180,
+        "ext": "webp",
+    },
+        "console": {
+        "display_name": "Console Output",
+        "description": "A console output theme for your tasks",
+        "base_cost": 330,
+        "ext": "webp",
     },
 }
 SPRITE_PACK_DISCOUNT = 0.8  # 20% off when buying remaining pieces as part of a pack
@@ -756,20 +775,27 @@ def sprite_piece_price(base_cost: int) -> int:
 def seed_sprite_packs():
     db = SessionLocal()
     try:
-        exists = db.query(models.StoreItem).filter(
-            models.StoreItem.item_type == models.ItemType.sprite_pack
-        ).first()
-        if exists:
-            return
+        existing = set()
+        for it in db.query(models.StoreItem).all():
+            if it.item_type != models.ItemType.sprite_pack or not it.meta:
+                continue
+            try:
+                existing.add(json.loads(it.meta).get("pack"))
+            except (ValueError, TypeError):
+                continue
 
         rows = []
         for pack_key, info in SPRITE_PACK_DEFS.items():
+            if pack_key in existing:
+                continue
+
+            ext = info.get("ext", "png")
             piece_price = sprite_piece_price(info["base_cost"])
             sprites = {
-                "card":       f"{pack_key}/card.png",
-                "column":     f"{pack_key}/column.png",
-                "bg_overlay": f"{pack_key}/bg_overlay.png",
-                "profile":    f"{pack_key}/profile.png",
+                "card":       f"{pack_key}/card.{ext}",
+                "column":     f"{pack_key}/column.{ext}",
+                "bg_overlay": f"{pack_key}/bg_overlay.{ext}",
+                "profile":    f"{pack_key}/profile.{ext}",
             }
 
             # Individual pieces
@@ -798,8 +824,9 @@ def seed_sprite_packs():
                 }),
             ))
 
-        db.add_all(rows)
-        db.commit()
+        if rows:
+            db.add_all(rows)
+            db.commit()
     finally:
         db.close()
 
