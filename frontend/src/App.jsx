@@ -978,12 +978,11 @@ async function fetchBuddyTasks() {
       t.id === task.id ? { ...t, done: !t.done } : t
     )
     
-    setTasks(updatedTasks)
-    
     if (task._pending) {
-      // If this is an offline task that needs to be queued, 
-      // but it was only a local task without server ID yet,
-      // we need special handling for dependencies
+      // Offline-safe order: persist to IndexedDB FIRST, then update the
+      // screen. If the app is force-closed right after this action, the
+      // durable write has already happened -- nothing is lost even if
+      // there's no time left to run any later code.
       const operation = {
         id: `complete_task:${task.id}`,
         type: "complete_task",
@@ -997,7 +996,10 @@ async function fetchBuddyTasks() {
         updatedTasks,
         operation
       )
+      setTasks(updatedTasks)
     } else {
+      setTasks(updatedTasks)
+
       // If it's a real server task, send the request now
       try {
         const res = await axios.patch(`${API}/tasks/${task.id}/complete`)
@@ -1021,6 +1023,7 @@ async function fetchBuddyTasks() {
             updatedTasks,
             operation
           )
+          setTasks(updatedTasks)
           setSyncStatus("offline")
         } else {
           // Re-throw if not offline - this shouldn't happen normally 
@@ -1044,11 +1047,12 @@ async function fetchBuddyTasks() {
     
     // Create optimistic change immediately - need to compare by string for consistency
     const updatedTasks = tasks.filter(task => String(task.id) !== taskId)
-    setTasks(updatedTasks)
     console.log("Processing delete for taskId:", taskId, "type:", typeof taskId)
     
     if (taskId.startsWith("local:")) {
-      // If this is an offline task that needs to be queued
+      // Offline-safe order: persist to IndexedDB FIRST, then update the
+      // screen. If the app is force-closed right after this action, the
+      // durable write has already happened before any UI/state update.
       const operation = {
         id: `delete_task:${taskId}`,
         type: "delete_task",
@@ -1062,7 +1066,10 @@ async function fetchBuddyTasks() {
         updatedTasks,
         operation
       )
+      setTasks(updatedTasks)
     } else {
+      setTasks(updatedTasks)
+
       // If it's a real server task, send the request now
       try {
         console.log("Sending DELETE request to:", `${API}/tasks/${taskId}`)
@@ -1088,6 +1095,7 @@ async function fetchBuddyTasks() {
             updatedTasks,
             operation
           )
+          setTasks(updatedTasks)
           setSyncStatus("offline")
         } else {
           // Re-throw if not offline - this shouldn't happen normally 
